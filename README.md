@@ -7,11 +7,6 @@ Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para leer obras de [
 - **Lector webcómic vertical** con controles Anterior/Siguiente.
 - **Sincronización entre aparatos** (`shared`): favoritos y progreso.
 
-## Contenido 18+
-
-Las obras marcadas como adultas muestran un candado y **no se pueden leer por defecto**.  
-Desbloqueo: **Ajustes ▸ Plugins ▸ ZonaTMO ▸ Mostrar contenido 18+**.
-
 ## Instalación
 
 Requiere **Kino 0.9.74+** (apiVersion 14).

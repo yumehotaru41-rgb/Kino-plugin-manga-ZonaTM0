@@ -3,7 +3,7 @@
   "name": "ZonaTMO",
   "author": "Community",
   "creator": "community",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 14,
   "entry": "plugin.js",
   "hosts": [
@@ -13,7 +13,7 @@
     "screen",
     "shared"
   ],
-  "description": "Lee manga, manhwa y manhua de zonatmo.org. Inicio, biblioteca, favoritos, historial y lector vertical. Contenido 18+ bloqueado por defecto.",
+  "description": "Lee manga, manhwa y manhua de zonatmo.org. Inicio, biblioteca, favoritos, historial y lector vertical.",
   "screen": {
     "label": "ZonaTMO",
     "labelEn": "ZonaTMO",
@@ -22,14 +22,5 @@
       "menu",
       "settings"
     ]
-  },
-  "settings": [
-    {
-      "key": "adulto",
-      "type": "toggle",
-      "label": "Mostrar contenido 18+",
-      "labelEn": "Show 18+ content",
-      "default": false
-    }
-  ]
+  }
 }

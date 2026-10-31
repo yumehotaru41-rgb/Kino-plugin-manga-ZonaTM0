@@ -51,8 +51,6 @@ function seriesCards(html, max) {
     const im = win.match(/(?:data-src|src)="(https:\/\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/i)
             || win.match(/(?:data-src|src)="(\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/i);
     if (im) poster = im[1].startsWith("http") ? im[1] : BASE + im[1];
-    // 18+
-    const adult = /\+18|18\+|adulto|nsfw|mature/i.test(win.slice(0, 600));
     // título: suele estar cerca del enlace
     let title = "";
     const tre = win.match(new RegExp(slug.replace(/-/g, "[- ]") + "[^<]{0,5}<[^>]*>([^<]{2,120})", "i"))
@@ -63,7 +61,7 @@ function seriesCards(html, max) {
       slug: type + "/" + id + "/" + slug,
       id, type, path,
       url: BASE + path,
-      poster, title, adult,
+      poster, title,
     });
   }
   return out;
@@ -116,10 +114,6 @@ function natCmp(a, b) {
   return 0;
 }
 
-function adultAllowed() {
-  try { return kino.config.get("adulto") === true; } catch (e) { return false; }
-}
-
 function seriesMeta(html) {
   const pick = (re) => { const m = html.match(re); return m ? clean(m[1]) : ""; };
   const title = pick(/<h1[^>]*>([^<]{1,200})</i)
@@ -135,7 +129,6 @@ function seriesMeta(html) {
   const status = /Public[aá]ndose|En emisi[oó]n/i.test(html) ? "En emisión"
                : /Finalizado/i.test(html) ? "Finalizado"
                : /Pausado|Cancelado/i.test(html) ? "Pausado/Cancelado" : "";
-  const adult = /\+18|18\+|NSFW|adulto/i.test(html.slice(0, 4000));
   // géneros
   const genres = [];
   const gre = /href="\/tag\/([^"]+)"[^>]*>([^<]+)</gi;
@@ -144,7 +137,7 @@ function seriesMeta(html) {
     const g = clean(gm[2]);
     if (g && genres.indexOf(g) < 0) genres.push(g);
   }
-  return { title, poster, synopsis, status, genres, adult };
+  return { title, poster, synopsis, status, genres };
 }
 
 // Imágenes del lector (/view_uploads/ID)
@@ -438,17 +431,6 @@ async function detailTree(state) {
   const d = state.detail;
   if (!d) return loadingTree();
   const fav = isFav(d.slug);
-  if (d.meta && d.meta.adult && !adultAllowed()) {
-    return {
-      type: "Column", padding: 24, gap: 16, crossAxisAlignment: "center", children: [
-        { type: "Icon", name: "lock", size: 48 },
-        { type: "Text", text: "Contenido 18+", style: "titleMedium" },
-        { type: "Text", text: "Activa «Mostrar contenido 18+» en los ajustes del plugin para leer esta obra.",
-          textEn: "Enable «Show 18+ content» in the plugin settings to read this work.",
-          color: "muted", textAlign: "center" },
-      ],
-    };
-  }
   const meta = d.meta || {};
   const chapters = d.chapters || [];
   const prog = progress()[d.slug];
@@ -685,7 +667,6 @@ export async function screenEvent(ctx) {
       if (name === "read") {
         const d = state.detail;
         if (!d) return null;
-        if (d.meta && d.meta.adult && !adultAllowed()) return null;
         chapters = d.chapters;
         idx = parseInt(String(ev.arg || "0"), 10) || 0;
         slug = d.slug;
