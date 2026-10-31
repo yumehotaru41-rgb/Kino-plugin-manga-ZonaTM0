@@ -357,32 +357,30 @@ function historyList() {
   };
 }
 
-function tabBody(state) {
+async function tabBody(state) {
   const tab = state.tab || "inicio";
   if (tab === "favoritos") return titleGridOf(favs(), null, false, true, EMPTY_FAV);
   if (tab === "historial") return historyList();
   if (tab === "biblioteca") {
-    if (state.libError) {
-      return {
-        type: "Column", padding: 24, gap: 12, crossAxisAlignment: "center", children: [
-          { type: "Icon", name: "error", color: "muted" },
-          { type: "Text", text: state.libError, color: "muted", textAlign: "center" },
-          { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
-            onPressed: { event: "loadLib" } },
-        ],
-      };
+    let items = Array.isArray(state.libItems) ? state.libItems : null;
+    if (!items) {
+      try {
+        items = await fetchLibrary(1);
+      } catch (e) {
+        return {
+          type: "Column", padding: 24, gap: 12, crossAxisAlignment: "center", children: [
+            { type: "Icon", name: "error", color: "muted" },
+            { type: "Text", text: "Error biblioteca: " + ((e && e.userMessage) || (e && e.message) || "error"),
+              color: "muted", textAlign: "center" },
+            { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
+              onPressed: { event: "retry" } },
+          ],
+        };
+      }
     }
-    if (!Array.isArray(state.libItems)) {
-      return {
-        type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
-          { type: "CircularProgressIndicator" },
-          { type: "Text", text: "Cargando biblioteca…", textEn: "Loading library…", color: "muted" },
-        ],
-      };
-    }
-    return titleGridOf(state.libItems, "libMore", state.libLoading === true, state.libDone === true);
+    return titleGridOf(items, "libMore", state.libLoading === true, state.libDone === true);
   }
-  return homeBody(state);
+  return await homeBody(state);
 }
 
 async function fetchLibrary(page) {
@@ -391,34 +389,40 @@ async function fetchLibrary(page) {
   return seriesCards(html, 40);
 }
 
-function homeBody(state) {
-  // solo render: los datos los carga screenEvent("open" / "loadHome")
-  if (state.homeError) {
+async function homeBody(state) {
+  let items = Array.isArray(state.inicioItems) ? state.inicioItems : null;
+  let err = state.homeError || null;
+  if (!items && !err) {
+    try {
+      try { kino.log("ZonaTMO: fetching /"); } catch (e) {}
+      const html = await getHtml("/");
+      try { kino.log("ZonaTMO: home html " + html.length + " chars"); } catch (e) {}
+      items = seriesCards(html, 36);
+      try { kino.log("ZonaTMO: cards " + items.length); } catch (e) {}
+    } catch (e) {
+      err = (e && e.userMessage) || (e && e.message) || String(e);
+      try { kino.log("ZonaTMO: home error " + err); } catch (e2) {}
+      items = [];
+    }
+  }
+  if (err) {
     return {
       type: "Column", padding: 24, gap: 12, crossAxisAlignment: "center", children: [
         { type: "Icon", name: "error", color: "muted" },
-        { type: "Text", text: state.homeError, color: "muted", textAlign: "center" },
+        { type: "Text", text: "Error: " + err, color: "muted", textAlign: "center" },
         { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
-          onPressed: { event: "loadHome" } },
+          onPressed: { event: "retry" } },
       ],
     };
   }
-  if (!Array.isArray(state.inicioItems)) {
-    return {
-      type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
-        { type: "CircularProgressIndicator" },
-        { type: "Text", text: "Cargando obras…", textEn: "Loading works…", color: "muted" },
-      ],
-    };
-  }
-  const items = state.inicioItems;
-  if (!items.length) {
+  if (!items || !items.length) {
     return {
       type: "Column", padding: 24, gap: 12, crossAxisAlignment: "center", children: [
         { type: "emptyState", icon: "list", title: "No se encontraron obras", titleEn: "No works found" },
-        { type: "Text", text: "ZonaTMO puede estar bloqueando la petición o el HTML cambió.", color: "muted", textAlign: "center" },
+        { type: "Text", text: "La petición llegó pero no hay tarjetas parseables. Puede ser Cloudflare o HTML distinto.",
+          color: "muted", textAlign: "center" },
         { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
-          onPressed: { event: "loadHome" } },
+          onPressed: { event: "retry" } },
       ],
     };
   }
@@ -648,8 +652,8 @@ export async function screen({ state, route }) {
     };
   }
 
-  const tab = state.tab || "inicio";
-  const body = tabBody(state);
+  // ruta raíz: pestañas en appBar.bottom (como Yuri Online)
+  const body = await tabBody(state);
   return {
     type: "Scaffold",
     appBar: {
@@ -661,17 +665,13 @@ export async function screen({ state, route }) {
           onPressed: { event: "goSearch" },
         },
       ],
+      bottom: {
+        type: "TabBar", key: "tabs", tabs: TABS,
+        value: state.tab || "inicio",
+        onChanged: { event: "tab" },
+      },
     },
-    body: {
-      type: "Column", flex: 1, children: [
-        {
-          type: "TabBar", key: "tabs", tabs: TABS,
-          value: tab,
-          onChanged: { event: "tab" },
-        },
-        { type: "Expanded", child: body },
-      ],
-    },
+    body,
   };
 }
 
@@ -681,6 +681,7 @@ export async function screenEvent(ev) {
   const arg = ev && (ev.arg != null ? ev.arg : ev.value);
   try {
     if (name === "open") {
+      syncPull();
       const route = (ev && ev.route) || {};
       const slug = routeSlug(route);
       if (route.name === "detail" && slug) {
@@ -688,80 +689,24 @@ export async function screenEvent(ev) {
           const d = await loadSeries(slug);
           return { state: { detail: d } };
         } catch (e) {
-          return { toast: "No se pudo cargar la obra: " + ((e && e.message) || "error") };
+          return { toast: "No se pudo cargar la obra" };
         }
       }
-      // pantalla principal: cargar inicio
-      try {
-        const html = await getHtml("/");
-        const items = seriesCards(html, 36);
-        return { state: { inicioItems: items, homeError: null } };
-      } catch (e) {
-        return {
-          state: {
-            inicioItems: [],
-            homeError: "No se pudo conectar con ZonaTMO. " + ((e && e.userMessage) || (e && e.message) || "Error de red"),
-          },
-        };
-      }
-    }
-
-    if (name === "loadHome" || name === "retry") {
-      try {
-        const html = await getHtml("/");
-        const items = seriesCards(html, 36);
-        return { state: { inicioItems: items, homeError: null, _r: Date.now() } };
-      } catch (e) {
-        return {
-          state: {
-            inicioItems: [],
-            homeError: "No se pudo conectar con ZonaTMO. " + ((e && e.userMessage) || (e && e.message) || "Error de red"),
-          },
-        };
-      }
-    }
-
-    if (name === "loadLib") {
-      try {
-        const items = await fetchLibrary(1);
-        return { state: { libItems: items, libPage: 1, libDone: items.length < 20, libError: null, libLoading: false } };
-      } catch (e) {
-        return {
-          state: {
-            libItems: [],
-            libError: "No se pudo cargar la biblioteca. " + ((e && e.userMessage) || (e && e.message) || "Error"),
-          },
-        };
-      }
+      return null;
     }
 
     if (name === "tab") {
       const tab = String(arg || "inicio");
-      const patch = { tab };
-      // al entrar a biblioteca, cargar si aún no hay datos
-      if (tab === "biblioteca" && !Array.isArray(state.libItems)) {
-        try {
-          const items = await fetchLibrary(1);
-          patch.libItems = items;
-          patch.libPage = 1;
-          patch.libDone = items.length < 20;
-          patch.libError = null;
-        } catch (e) {
-          patch.libItems = [];
-          patch.libError = "No se pudo cargar la biblioteca. " + ((e && e.userMessage) || (e && e.message) || "Error");
-        }
-      }
-      return { state: patch };
+      return { state: { tab } };
     }
     if (name === "libMore") {
       const page = (state.libPage || 1) + 1;
       try {
         const more = await fetchLibrary(page);
         const prev = Array.isArray(state.libItems) ? state.libItems : [];
-        const items = prev.concat(more);
         return {
           state: {
-            libItems: items,
+            libItems: prev.concat(more),
             libPage: page,
             libLoading: false,
             libDone: more.length < 20,
@@ -770,6 +715,9 @@ export async function screenEvent(ev) {
       } catch (e) {
         return { toast: "No se pudieron cargar más obras" };
       }
+    }
+    if (name === "retry") {
+      return { state: { inicioItems: null, libItems: null, homeError: null, _r: Date.now() } };
     }
     if (name === "goSearch") {
       return { route: { push: "search" }, state: { results: null, resultsQ: "" } };
