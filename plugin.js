@@ -1,10 +1,8 @@
 // Plugin de Kino para leer obras de zonatmo.org
-// Interfaz tipo lector de manga: Inicio, Biblioteca,
-// Favoritos, Historial, detalle de obra y lector webcómic vertical.
-// Funciona en teléfono y TV desde el mismo árbol de nodos.
-//
-// Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
-// Adaptado del plugin Yuri Online.
+// Interfaz: Inicio, Biblioteca, Favoritos, Historial,
+// detalle de obra y lector webcómic vertical.
+// Requiere Kino 0.9.74+ (apiVersion 14, capability "screen").
+// Adaptado del plugin Yuri Online (estructura de pantallas correcta).
 
 const BASE = "https://zonatmo.org";
 
@@ -12,10 +10,7 @@ const BASE = "https://zonatmo.org";
 
 async function getHtml(path) {
   const r = await kino.fetch(BASE + path, {
-    headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "User-Agent": "Mozilla/5.0 (compatible; KinoPlugin/1.0)",
-    },
+    headers: { Accept: "text/html,application/xhtml+xml" },
   });
   if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
     userMessage: "No se pudo conectar con ZonaTMO. Inténtalo de nuevo.",
@@ -33,11 +28,9 @@ function clean(s) {
     .replace(/\s+/g, " ").trim();
 }
 
-// Tarjetas de obras desde /library/{tipo}/{id}/{slug}
 function seriesCards(html, max) {
   const out = [];
   const seen = {};
-  // enlaces del estilo /library/manga/30537/mairimashita-iruma-kun
   const re = /href="(?:https:\/\/zonatmo\.org)?(\/library\/(manga|manhwa|manhua|comic|novel|webtoon)\/(\d+)\/([a-z0-9][a-z0-9-]*))"/gi;
   let m;
   while ((m = re.exec(html)) !== null && out.length < (max || 48)) {
@@ -46,12 +39,10 @@ function seriesCards(html, max) {
     if (seen[key]) continue;
     seen[key] = true;
     const win = html.slice(Math.max(0, m.index - 200), m.index + 1800);
-    // poster
     let poster = "";
     const im = win.match(/(?:data-src|src)="(https:\/\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/i)
             || win.match(/(?:data-src|src)="(\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/i);
     if (im) poster = im[1].startsWith("http") ? im[1] : BASE + im[1];
-    // título: suele estar cerca del enlace
     let title = "";
     const tre = win.match(new RegExp(slug.replace(/-/g, "[- ]") + "[^<]{0,5}<[^>]*>([^<]{2,120})", "i"))
              || win.match(/>([^<]{3,100})</);
@@ -67,11 +58,8 @@ function seriesCards(html, max) {
   return out;
 }
 
-// Lista de capítulos desde la página de detalle.
-// Enlaces típicos: /view_uploads/1094485  junto a "Capítulo N"
 function chapterList(html) {
   const map = new Map();
-  // "Capítulo 464" ... /view_uploads/1094485
   const re = /Cap[ií]tulo\s+([0-9]+(?:\.[0-9]+)?)\s*[\s\S]{0,400}?href="(?:https:\/\/zonatmo\.org)?(\/view_uploads\/(\d+))"/gi;
   let m;
   while ((m = re.exec(html)) !== null) {
@@ -85,7 +73,6 @@ function chapterList(html) {
       title: "Capítulo " + num,
     });
   }
-  // fallback más permisivo
   if (map.size === 0) {
     const re2 = /href="(?:https:\/\/zonatmo\.org)?(\/view_uploads\/(\d+))"[^>]*>[\s\S]{0,80}?Cap[ií]tulo\s+([0-9]+(?:\.[0-9]+)?)/gi;
     while ((m = re2.exec(html)) !== null) {
@@ -129,7 +116,6 @@ function seriesMeta(html) {
   const status = /Public[aá]ndose|En emisi[oó]n/i.test(html) ? "En emisión"
                : /Finalizado/i.test(html) ? "Finalizado"
                : /Pausado|Cancelado/i.test(html) ? "Pausado/Cancelado" : "";
-  // géneros
   const genres = [];
   const gre = /href="\/tag\/([^"]+)"[^>]*>([^<]+)</gi;
   let gm;
@@ -140,11 +126,9 @@ function seriesMeta(html) {
   return { title, poster, synopsis, status, genres };
 }
 
-// Imágenes del lector (/view_uploads/ID)
 function readerImages(html) {
   const out = [];
   const seen = {};
-  // patrones comunes de imágenes de página
   const patterns = [
     /(?:data-src|src)="(https:\/\/[^"]*zonatmo\.org[^"]*\/(?:uploads|images|pages|media|storage)[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/gi,
     /(?:data-src|src)="(https:\/\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/gi,
@@ -155,7 +139,6 @@ function readerImages(html) {
     while ((m = re.exec(html)) !== null) {
       let url = m[1];
       if (!url.startsWith("http")) url = BASE + url;
-      // filtrar iconos, logos, avatares pequeños
       if (/avatar|logo|icon|emoji|badge|button|thumb-sm|favicon/i.test(url)) continue;
       if (seen[url]) continue;
       seen[url] = true;
@@ -163,7 +146,6 @@ function readerImages(html) {
     }
     if (out.length > 3) break;
   }
-  // orden aproximado: si hay números de página en la URL, ordenar
   out.sort((a, b) => {
     const na = (a.url.match(/(?:page|p|img)[_-]?(\d+)/i) || [])[1];
     const nb = (b.url.match(/(?:page|p|img)[_-]?(\d+)/i) || [])[1];
@@ -173,7 +155,6 @@ function readerImages(html) {
   return out;
 }
 
-// Caja (dp) para una página de proporción r = alto/ancho
 const SIZE_SCALE = [16, 24, 32, 40, 48, 64, 80, 96, 120, 160, 200, 240, 320, 400, 480, 560, 640];
 
 function pageBox(r, wCap, hCap) {
@@ -244,12 +225,10 @@ function pageNodes(p, i) {
 }
 
 async function loadSeries(slug) {
-  // slug = "manga/30537/mairimashita-iruma-kun"
   const path = "/library/" + slug + (slug.endsWith("/") ? "" : "/");
   const html = await getHtml(path);
   const meta = seriesMeta(html);
   let chapters = chapterList(html);
-  // si no hay capítulos, intentar sin barra final
   if (!chapters.length && path.endsWith("/")) {
     try {
       const html2 = await getHtml(path.slice(0, -1));
@@ -382,7 +361,6 @@ async function tabBody(state) {
 }
 
 async function fetchLibrary(page) {
-  // la biblioteca de ZonaTMO usa ?page=N
   const path = page <= 1 ? "/biblioteca" : "/biblioteca?page=" + page;
   const html = await getHtml(path);
   return seriesCards(html, 40);
@@ -413,18 +391,18 @@ async function homeBody(state) {
   };
 }
 
-// ------------------------------------------------------------- rutas
-
 function routeSlug(r) {
   if (!r) return "";
   return String((r.args && r.args.slug) || (r.params && r.params.slug) || r.slug || "");
 }
 
 function loadingTree(msg) {
-  return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
-    { type: "CircularProgressIndicator" },
-    { type: "Text", text: msg || "Cargando…", textEn: "Loading…", color: "muted" },
-  ] };
+  return {
+    type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
+      { type: "CircularProgressIndicator" },
+      { type: "Text", text: msg || "Cargando…", textEn: "Loading…", color: "muted" },
+    ],
+  };
 }
 
 async function detailTree(state) {
@@ -439,172 +417,252 @@ async function detailTree(state) {
     continueIdx = chapters.findIndex((c) => c.url === prog.chUrl || c.path === prog.chUrl);
   }
 
-  const headerChildren = [
-    meta.poster ? { type: "Image", url: meta.poster, width: 160, height: 220, key: "poster" } : null,
-    { type: "Text", text: meta.title || d.slug, style: "titleLarge", key: "t" },
-    meta.status ? { type: "Text", text: meta.status, color: "muted", key: "st" } : null,
-    meta.genres && meta.genres.length
-      ? { type: "Text", text: meta.genres.join(" · "), color: "muted", key: "g" } : null,
-    meta.synopsis
-      ? { type: "Text", text: meta.synopsis.slice(0, 400) + (meta.synopsis.length > 400 ? "…" : ""), key: "syn" } : null,
-  ].filter(Boolean);
+  const headChildren = [];
+  if (meta.poster) {
+    headChildren.push({ type: "Image", url: meta.poster, width: 140, height: 200, key: "poster" });
+  }
+  headChildren.push({ type: "Text", text: meta.title || d.slug, style: "h2", key: "t" });
+  if (meta.status) headChildren.push({ type: "Text", text: meta.status, color: "muted", key: "st" });
+  if (meta.genres && meta.genres.length) {
+    headChildren.push({ type: "Text", text: meta.genres.join(" · "), color: "muted", key: "g" });
+  }
+  if (meta.synopsis) {
+    headChildren.push({
+      type: "Text",
+      text: meta.synopsis.slice(0, 400) + (meta.synopsis.length > 400 ? "…" : ""),
+      key: "syn",
+    });
+  }
 
-  const actions = [
-    { type: "FilledButton", key: "favBtn",
-      label: fav ? "Quitar de favoritos" : "Añadir a favoritos",
-      labelEn: fav ? "Remove from favourites" : "Add to favourites",
-      icon: fav ? "favorite" : "favorite_border",
-      onTap: { event: "fav" } },
-  ];
+  const actions = [];
   if (continueIdx >= 0) {
-    actions.unshift({
-      type: "FilledButton", key: "contBtn",
-      label: "Continuar · " + (chapters[continueIdx].title || ""),
-      labelEn: "Continue · " + (chapters[continueIdx].title || ""),
-      icon: "play_arrow",
-      onTap: { event: "read", arg: String(continueIdx) },
+    actions.push({
+      type: "ElevatedButton", key: "contBtn", icon: "play",
+      labelText: "Continuar · " + (chapters[continueIdx].title || ""),
+      labelTextEn: "Continue · " + (chapters[continueIdx].title || ""),
+      onPressed: { event: "read", arg: String(continueIdx) },
     });
   } else if (chapters.length) {
-    actions.unshift({
-      type: "FilledButton", key: "startBtn",
-      label: "Empezar a leer",
-      labelEn: "Start reading",
-      icon: "play_arrow",
-      onTap: { event: "read", arg: "0" },
+    actions.push({
+      type: "ElevatedButton", key: "startBtn", icon: "play",
+      labelText: "Empezar a leer", labelTextEn: "Start reading",
+      onPressed: { event: "read", arg: "0" },
     });
   }
+  actions.push({
+    type: "ElevatedButton", key: "fav",
+    icon: fav ? "heart" : "star",
+    labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
+    labelTextEn: fav ? "Remove favourite" : "Add favourite",
+    onPressed: "fav",
+  });
 
-  const chItems = chapters.map((ch, i) => ({
-    type: "ListTile",
-    key: "ch-" + ch.id,
-    title: ch.title,
-    trailing: { type: "Icon", name: "chevron_right" },
-    onTap: { event: "read", arg: String(i) },
-  }));
-
-  return {
-    type: "SingleChildScrollView", key: "detail", flex: 1,
-    children: [{
-      type: "Column", padding: 16, gap: 12, children: [
-        ...headerChildren,
-        { type: "Row", gap: 8, children: actions },
-        { type: "Text", text: "Capítulos (" + chapters.length + ")", style: "titleMedium", key: "chh" },
-        chapters.length
-          ? { type: "ListView", key: "chs", shrinkWrap: true, items: chItems }
-          : { type: "Text", text: "No se encontraron capítulos.", color: "muted" },
-      ],
-    }],
+  const head = {
+    type: "Column", key: "head", padding: 16, gap: 10, children: [
+      ...headChildren,
+      { type: "Row", gap: 8, wrap: true, children: actions },
+    ].filter(Boolean),
   };
+
+  const items = [head];
+  items.push({
+    type: "Text",
+    text: chapters.length + " capítulos",
+    textEn: chapters.length + " chapters",
+    style: "h3",
+    padding: 16,
+  });
+  for (let i = 0; i < chapters.length; i++) {
+    const c = chapters[i];
+    items.push({
+      type: "ListTile", key: "ch" + i, dense: true,
+      title: c.title,
+      onTap: { event: "read", arg: String(i) },
+      trailing: { type: "Icon", name: "arrow_forward" },
+    });
+  }
+  return { type: "ListView", key: "detailBody", items };
 }
 
-function readerTree(state) {
+let navSeq = 0;
+
+async function readerTree(state) {
   const r = state.reader;
   if (!r) return loadingTree("Cargando páginas…");
-  const images = r.images || [];
-  const pages = [];
-  for (let i = 0; i < images.length; i++) {
-    pages.push(...pageNodes(images[i], i));
-  }
-  const nav = {
-    type: "Row", key: "nav", mainAxisAlignment: "spaceBetween", padding: 8, children: [
-      { type: "FilledButton", key: "prev", label: "Anterior", labelEn: "Previous",
-        enabled: r.idx > 0, onTap: { event: "prevChap" } },
-      { type: "Text", text: (r.chapters[r.idx] && r.chapters[r.idx].title) || ("Cap. " + (r.idx + 1)),
-        key: "ct" },
-      { type: "FilledButton", key: "next", label: "Siguiente", labelEn: "Next",
-        enabled: r.idx < r.chapters.length - 1, onTap: { event: "nextChap" } },
-    ],
+  const pages = r.images || [];
+  const ch = r.chapters[r.idx];
+  const hasNext = r.idx + 1 < r.chapters.length;
+  const hasPrev = r.idx > 0;
+  const chKey = String(ch ? ch.url : r.idx).replace(/[^a-z0-9]/gi, "").slice(-16);
+  const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
+  const pageCol = {
+    type: "Column", gap: 4, crossAxisAlignment: "center",
+    children: pages.flatMap((p, i) => pageNodes(p, i)),
   };
-  return {
-    type: "Column", key: "reader", flex: 1, children: [
-      nav,
-      { type: "SingleChildScrollView", key: "pages", flex: 1,
-        children: [{ type: "Column", crossAxisAlignment: "center", gap: 8, children: pages }] },
-      nav,
+  const body = [];
+  body.push({
+    type: "SingleChildScrollView", key: scrollKey, flex: 1,
+    children: [pageCol],
+  });
+  body.push({
+    type: "Row", gap: 12, padding: 16, mainAxisAlignment: "center", wrap: true, children: [
+      {
+        type: "ElevatedButton", icon: "arrow_back",
+        labelText: "Anterior", labelTextEn: "Previous",
+        onPressed: "prevChap", enabled: hasPrev,
+      },
+      {
+        type: "ElevatedButton",
+        labelText: hasNext ? "Siguiente" : "Último capítulo",
+        labelTextEn: hasNext ? "Next" : "Last chapter",
+        icon: "arrow_forward", onPressed: "nextChap", enabled: hasNext,
+      },
     ],
+  });
+  return {
+    type: "Scaffold",
+    appBar: { title: ch ? ch.title : "Leyendo", actions: [] },
+    body: { type: "Column", children: body },
   };
 }
 
 function searchTree(state) {
-  const results = state.results;
+  const q = typeof state.resultsQ === "string" ? state.resultsQ : "";
+  const results = Array.isArray(state.results) ? state.results : null;
   return {
-    type: "Column", key: "search", flex: 1, children: [
-      { type: "TextField", key: "q",
-        label: "Buscar", labelEn: "Search",
-        value: state.resultsQ || "",
-        onSubmitted: { event: "doSearch" },
-        autofocus: true },
-      results
-        ? titleGridOf(results, null, false, true,
-            { type: "emptyState", icon: "search", title: "Sin resultados", titleEn: "No results" })
-        : { type: "Text", text: "Escribe un título y pulsa buscar.", color: "muted", padding: 16 },
-    ],
+    type: "Scaffold",
+    appBar: { title: "Buscar obra", titleEn: "Search a work", actions: [] },
+    body: {
+      type: "SingleChildScrollView", key: "searchBody",
+      children: [{
+        type: "Column", children: [
+          {
+            type: "Form", key: "search", onSubmitted: "search", gap: 8, padding: 16, children: [
+              {
+                type: "TextField", key: "q", kind: "search", value: q,
+                labelText: "Título", labelTextEn: "Title",
+                hintText: "P. ej. Solo Leveling", hintEn: "e.g. Solo Leveling",
+                required: true,
+              },
+              {
+                type: "ElevatedButton", icon: "search",
+                labelText: "Buscar", labelTextEn: "Search", submit: true,
+              },
+            ],
+          },
+          results
+            ? (results.length
+                ? titleGridOf(results)
+                : { type: "emptyState", icon: "search", title: "Sin resultados.", titleEn: "No results." })
+            : {
+                type: "Text",
+                text: "Escribe un título y pulsa Buscar.",
+                textEn: "Type a title and press Search.",
+                color: "muted",
+                padding: 16,
+              },
+        ].filter(Boolean),
+      }],
+    },
   };
 }
 
-// ------------------------------------------------------------- screen API
+// --------------------------------------------------------- exports
 
-let navSeq = 0;
-
-export async function screen(ctx) {
+export async function screen({ state, route }) {
   syncPull();
-  const route = (ctx && ctx.route) || { name: "main" };
-  const state = (ctx && ctx.state) || {};
-  const name = route.name || route.route || "main";
-
-  if (name === "detail") {
-    const slug = routeSlug(route) || state.detail && state.detail.slug;
-    if (!state.detail || state.detail.slug !== slug) {
-      // se carga en open / openSeries
-      return {
-        title: "Cargando…",
-        body: loadingTree(),
-      };
+  const r = route || { name: "main" };
+  try {
+    if (r.name === "detail") {
+      const slug = routeSlug(r);
+      if (!state.detail || state.detail.slug !== slug) return loadingTree();
+      return await detailTree(state);
     }
+    if (r.name === "read") return await readerTree(state);
+    if (r.name === "search") return searchTree(state);
+  } catch (e) {
     return {
-      title: (state.detail.meta && state.detail.meta.title) || "Obra",
-      body: await detailTree(state),
-      actions: [{ icon: "favorite", event: "fav" }],
+      type: "Column", padding: 16, gap: 8, children: [
+        { type: "Icon", name: "error", color: "muted" },
+        {
+          type: "Text",
+          text: "No se pudo cargar (" + ((e && e.code) || "error") + ").",
+          textEn: "Could not load (" + ((e && e.code) || "error") + ").",
+          color: "muted",
+        },
+        {
+          type: "ElevatedButton", icon: "refresh",
+          labelText: "Reintentar", labelTextEn: "Retry",
+          onPressed: { event: "retry" },
+        },
+      ],
     };
   }
 
-  if (name === "read") {
-    return {
-      title: (state.reader && state.reader.title) || "Lector",
-      body: readerTree(state),
-    };
-  }
-
-  if (name === "search") {
-    return {
-      title: "Buscar",
-      titleEn: "Search",
-      body: searchTree(state),
-    };
-  }
-
-  // main
   const tab = state.tab || "inicio";
+  let body;
+  try {
+    body = await tabBody(state);
+  } catch (e) {
+    body = {
+      type: "Column", padding: 16, gap: 8, children: [
+        { type: "Icon", name: "error", color: "muted" },
+        {
+          type: "Text",
+          text: "No se pudo cargar (" + ((e && e.code) || "error") + ").",
+          textEn: "Could not load (" + ((e && e.code) || "error") + ").",
+          color: "muted",
+        },
+        {
+          type: "ElevatedButton", icon: "refresh",
+          labelText: "Reintentar", labelTextEn: "Retry",
+          onPressed: { event: "retry" },
+        },
+      ],
+    };
+  }
   return {
-    title: "ZonaTMO",
+    type: "Scaffold",
+    appBar: {
+      title: "ZonaTMO",
+      actions: [
+        {
+          type: "IconButton", icon: "search", key: "goSearch",
+          labelText: "Buscar", labelTextEn: "Search",
+          onPressed: { event: "goSearch" },
+        },
+      ],
+    },
     body: {
       type: "Column", flex: 1, children: [
-        { type: "SegmentedButton", key: "tabs",
-          segments: TABS, value: tab,
-          onChanged: { event: "tab" } },
-        { type: "Expanded", child: await tabBody(state) },
+        {
+          type: "TabBar", key: "tabs", tabs: TABS,
+          value: tab,
+          onChanged: { event: "tab" },
+        },
+        { type: "Expanded", child: body },
       ],
     },
   };
 }
 
-export async function screenEvent(ctx) {
-  const ev = (ctx && ctx.event) || {};
-  const name = ev.name || ev.event || "";
-  const state = (ctx && ctx.state) || {};
+export async function screenEvent(ev) {
+  const name = ev && (ev.name || ev.event) || "";
+  const state = (ev && ev.state) || {};
+  const arg = ev && (ev.arg != null ? ev.arg : ev.value);
   try {
+    if (name === "open") {
+      const route = (ev && ev.route) || {};
+      const slug = routeSlug(route);
+      if (route.name === "detail" && slug) {
+        const d = await loadSeries(slug);
+        return { state: { detail: d } };
+      }
+      return null;
+    }
+
     if (name === "tab") {
-      const tab = String(ev.arg || ev.value || "inicio");
+      const tab = String(arg || "inicio");
       return { state: { tab } };
     }
     if (name === "libMore") {
@@ -624,18 +682,22 @@ export async function screenEvent(ctx) {
     if (name === "goSearch") {
       return { route: { push: "search" }, state: { results: null, resultsQ: "" } };
     }
-    if (name === "doSearch") {
-      const q = clean(String(ev.arg || ev.value || state.resultsQ || ""));
+    if (name === "search" || name === "doSearch") {
+      const inputs = (state && state.inputs) || {};
+      const q = clean(String(arg || inputs.q || state.resultsQ || ""));
       if (q.length < 2) return { toast: "Escribe al menos 2 caracteres" };
-      // búsqueda vía biblioteca con query
-      const html = await getHtml("/biblioteca?_title=" + encodeURIComponent(q) + "&filter_by=title");
-      // fallback: página de inicio + filtrado local
-      let results = seriesCards(html, 40);
+      let results = [];
+      try {
+        const html = await getHtml("/biblioteca?_title=" + encodeURIComponent(q) + "&filter_by=title");
+        results = seriesCards(html, 40);
+      } catch (e) { /* fallback abajo */ }
       if (!results.length) {
-        const home = await getHtml("/");
-        results = seriesCards(home, 80).filter((it) =>
-          it.title.toLowerCase().indexOf(q.toLowerCase()) >= 0 ||
-          it.slug.toLowerCase().indexOf(q.toLowerCase().replace(/\s+/g, "-")) >= 0);
+        try {
+          const home = await getHtml("/");
+          results = seriesCards(home, 80).filter((it) =>
+            it.title.toLowerCase().indexOf(q.toLowerCase()) >= 0 ||
+            it.slug.toLowerCase().indexOf(q.toLowerCase().replace(/\s+/g, "-")) >= 0);
+        } catch (e2) { /* */ }
       }
       return {
         state: { results, resultsQ: q },
@@ -668,7 +730,7 @@ export async function screenEvent(ctx) {
         const d = state.detail;
         if (!d) return null;
         chapters = d.chapters;
-        idx = parseInt(String(ev.arg || "0"), 10) || 0;
+        idx = parseInt(String(arg || "0"), 10) || 0;
         slug = d.slug;
         title = d.meta && d.meta.title;
         poster = d.meta && d.meta.poster;
@@ -688,27 +750,23 @@ export async function screenEvent(ctx) {
         if (images.length) readerCachePut(ch.url, images);
       }
       if (!images.length) {
-        return { toast: "No se encontraron páginas en este capítulo. El visor de ZonaTMO carga las imágenes de forma dinámica." };
+        return {
+          toast: "No se encontraron páginas en este capítulo. El visor de ZonaTMO carga las imágenes de forma dinámica.",
+        };
       }
       markRead(slug, title, poster, ch.title, ch.url);
       const reader = { slug, title, poster, chapters, idx, images, tk: ++navSeq };
       if (name === "read") return { state: { reader }, route: { push: "read" } };
       return { state: { reader } };
     }
-    if (name === "openSeries" || name === "open") {
-      const slug = String(ev.arg || routeSlug(ctx && ctx.route) || "");
+    if (name === "openSeries") {
+      const slug = String(arg || "");
       if (!slug || slug.indexOf("/") < 0) return { toast: "Slug inválido" };
       const d = await loadSeries(slug);
-      if (!d.chapters.length) {
-        return {
-          state: { detail: d },
-          route: { push: "detail", params: { slug } },
-          toast: "No se encontraron capítulos (puede que la lista se cargue por JS).",
-        };
-      }
       return {
         state: { detail: d },
         route: { push: "detail", params: { slug } },
+        toast: d.chapters.length ? undefined : "No se encontraron capítulos (puede que la lista se cargue por JS).",
       };
     }
   } catch (e) {
