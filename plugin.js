@@ -68,9 +68,10 @@ function seriesCards(html, max) {
 
 function chapterList(html) {
   const map = new Map();
-  const re = /Cap[ií]tulo\s+([0-9]+(?:\.[0-9]+)?)\s*[\s\S]{0,400}?href="(?:https:\/\/zonatmo\.org)?(\/view_uploads\/(\d+))"/gi;
+  // 1) Parear "Capítulo N" con el siguiente /view_uploads/ID en una ventana cercana
+  const blockRe = /Cap[ií]tulo\s+([0-9]+(?:\.[0-9]+)?)[\s\S]{0,800}?(\/view_uploads\/(\d+))/gi;
   let m;
-  while ((m = re.exec(html)) !== null) {
+  while ((m = blockRe.exec(html)) !== null) {
     const num = m[1], path = m[2], uid = m[3];
     if (map.has(uid)) continue;
     map.set(uid, {
@@ -81,16 +82,41 @@ function chapterList(html) {
       title: "Capítulo " + num,
     });
   }
-  if (map.size === 0) {
-    const re2 = /href="(?:https:\/\/zonatmo\.org)?(\/view_uploads\/(\d+))"[^>]*>[\s\S]{0,80}?Cap[ií]tulo\s+([0-9]+(?:\.[0-9]+)?)/gi;
-    while ((m = re2.exec(html)) !== null) {
-      const path = m[1], uid = m[2], num = m[3];
+  // 2) Cualquier view_uploads suelto (sin título de capítulo cerca)
+  if (map.size < 3) {
+    const reUid = /(?:https?:\/\/zonatmo\.org)?(\/view_uploads\/(\d+))/gi;
+    while ((m = reUid.exec(html)) !== null) {
+      const path = m[1], uid = m[2];
       if (map.has(uid)) continue;
-      map.set(uid, { url: BASE + path, path, id: uid, tail: num, title: "Capítulo " + num });
+      // buscar "Capítulo N" hacia atrás
+      const before = html.slice(Math.max(0, m.index - 500), m.index);
+      const cm = before.match(/Cap[ií]tulo\s+([0-9]+(?:\.[0-9]+)?)/i);
+      const num = cm ? cm[1] : uid;
+      map.set(uid, {
+        url: BASE + path,
+        path,
+        id: uid,
+        tail: num,
+        title: cm ? "Capítulo " + num : "Capítulo " + uid,
+      });
     }
+  }
+  // 3) Enlaces /viewer/ID (algunas redirecciones)
+  const reView = /(?:https?:\/\/zonatmo\.org)?(\/viewer\/(\d+)(?:\/cascade)?)/gi;
+  while ((m = reView.exec(html)) !== null) {
+    const path = "/view_uploads/" + m[2], uid = m[2];
+    if (map.has(uid)) continue;
+    map.set(uid, {
+      url: BASE + path,
+      path,
+      id: uid,
+      tail: uid,
+      title: "Capítulo " + uid,
+    });
   }
   const arr = [...map.values()];
   arr.sort((a, b) => natCmp(a.tail, b.tail));
+  try { kino.log("ZonaTMO: chapters found " + arr.length); } catch (e) {}
   return arr;
 }
 
@@ -137,29 +163,39 @@ function seriesMeta(html) {
 function readerImages(html) {
   const out = [];
   const seen = {};
-  const patterns = [
-    /(?:data-src|src)="(https:\/\/[^"]*zonatmo\.org[^"]*\/(?:uploads|images|pages|media|storage)[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/gi,
-    /(?:data-src|src)="(https:\/\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/gi,
-    /(?:data-src|src)="(\/[^"]+\.(?:jpe?g|png|webp|avif)[^"]*)"/gi,
-  ];
-  for (const re of patterns) {
-    let m;
-    while ((m = re.exec(html)) !== null) {
-      let url = m[1];
-      if (!url.startsWith("http")) url = BASE + url;
-      if (/avatar|logo|icon|emoji|badge|button|thumb-sm|favicon/i.test(url)) continue;
-      if (seen[url]) continue;
-      seen[url] = true;
-      out.push({ url });
+  const push = (u) => {
+    if (!u) return;
+    let url = u;
+    if (!url.startsWith("http")) url = BASE + url;
+    if (/avatar|logo|icon|emoji|badge|button|favicon|sprite|flag|banner-ad/i.test(url)) return;
+    if (seen[url]) return;
+    seen[url] = true;
+    out.push({ url });
+  };
+  // cascade / viewer-img (TMO clásico)
+  let m;
+  const reViewer = /(?:data-src|data-original|src)=["']([^"']+)["'][^>]*class=["'][^"']*viewer-img/gi;
+  while ((m = reViewer.exec(html)) !== null) push(m[1]);
+  const reViewer2 = /class=["'][^"']*viewer-img[^"']*["'][^>]*(?:data-src|data-original|src)=["']([^"']+)["']/gi;
+  while ((m = reViewer2.exec(html)) !== null) push(m[1]);
+  // uploads CDN genéricos
+  if (out.length < 2) {
+    const patterns = [
+      /(?:data-src|data-original|src)=["'](https?:\/\/[^"']*\/uploads\/[^"']+\.(?:jpe?g|png|webp|avif)[^"']*)["']/gi,
+      /(?:data-src|data-original|src)=["'](https?:\/\/img[^"']+\.(?:jpe?g|png|webp|avif)[^"']*)["']/gi,
+      /(?:data-src|data-original|src)=["'](https?:\/\/[^"']+\.(?:jpe?g|png|webp|avif)[^"']*)["']/gi,
+    ];
+    for (const re of patterns) {
+      while ((m = re.exec(html)) !== null) push(m[1]);
+      if (out.length > 5) break;
     }
-    if (out.length > 3) break;
   }
-  out.sort((a, b) => {
-    const na = (a.url.match(/(?:page|p|img)[_-]?(\d+)/i) || [])[1];
-    const nb = (b.url.match(/(?:page|p|img)[_-]?(\d+)/i) || [])[1];
-    if (na && nb) return parseInt(na, 10) - parseInt(nb, 10);
-    return 0;
-  });
+  // URLs en scripts JSON
+  if (out.length < 2) {
+    const reJs = /["'](https?:\/\/[^"']+\/uploads\/[^"']+\.(?:jpe?g|png|webp)[^"']*)["']/gi;
+    while ((m = reJs.exec(html)) !== null) push(m[1]);
+  }
+  try { kino.log("ZonaTMO: reader images " + out.length); } catch (e) {}
   return out;
 }
 
@@ -233,18 +269,23 @@ function pageNodes(p, i) {
 }
 
 async function loadSeries(slug) {
-  const path = "/library/" + slug + (slug.endsWith("/") ? "" : "/");
-  const html = await getHtml(path);
-  const meta = seriesMeta(html);
+  const cleanSlug = String(slug || "").replace(/^\/+|\/+$/g, "");
+  const path = "/library/" + cleanSlug;
+  try { kino.log("ZonaTMO: loadSeries " + path); } catch (e) {}
+  let html = await getHtml(path);
+  let meta = seriesMeta(html);
   let chapters = chapterList(html);
-  if (!chapters.length && path.endsWith("/")) {
+  if (!chapters.length) {
     try {
-      const html2 = await getHtml(path.slice(0, -1));
-      chapters = chapterList(html2);
-      if (!meta.title) Object.assign(meta, seriesMeta(html2));
-    } catch (e) { /* ignore */ }
+      html = await getHtml(path + "/");
+      if (!meta.title) meta = seriesMeta(html);
+      chapters = chapterList(html);
+    } catch (e) { /* */ }
   }
-  return { slug, meta, chapters, path };
+  // orden: más antiguos primero (como Yuri) para "Empezar" = cap 1
+  // chapterList ya ordena ascendente por número
+  try { kino.log("ZonaTMO: meta=" + (meta.title || "?") + " ch=" + chapters.length); } catch (e) {}
+  return { slug: cleanSlug, meta, chapters, path };
 }
 
 // ----------------------------------------------------------- storage / shared
@@ -684,12 +725,18 @@ export async function screenEvent(ev) {
       syncPull();
       const route = (ev && ev.route) || {};
       const slug = routeSlug(route);
-      if (route.name === "detail" && slug) {
+      if ((route.name === "detail" || (route.params && route.params.slug) || (route.args && route.args.slug)) && slug) {
         try {
           const d = await loadSeries(slug);
+          if (!d.chapters.length) {
+            return {
+              state: { detail: d },
+              toast: "No se listaron capítulos (HTML vacío o distinto). Revisa el log.",
+            };
+          }
           return { state: { detail: d } };
         } catch (e) {
-          return { toast: "No se pudo cargar la obra" };
+          return { toast: "No se pudo cargar la obra: " + ((e && e.message) || "error") };
         }
       }
       return null;
@@ -724,25 +771,44 @@ export async function screenEvent(ev) {
     }
     if (name === "search" || name === "doSearch") {
       const inputs = (state && state.inputs) || {};
-      const q = clean(String(arg || inputs.q || state.resultsQ || ""));
+      const q = clean(String(arg || inputs.q || (ev && ev.value && ev.value.q) || state.resultsQ || ""));
       if (q.length < 2) return { toast: "Escribe al menos 2 caracteres" };
       let results = [];
-      try {
-        const html = await getHtml("/biblioteca?_title=" + encodeURIComponent(q) + "&filter_by=title");
-        results = seriesCards(html, 40);
-      } catch (e) { /* fallback abajo */ }
-      if (!results.length) {
+      const tries = [
+        "/biblioteca?title=" + encodeURIComponent(q),
+        "/biblioteca?_title=" + encodeURIComponent(q) + "&filter_by=title",
+        "/biblioteca?filter_by=title&title=" + encodeURIComponent(q),
+      ];
+      for (const path of tries) {
         try {
-          const home = await getHtml("/");
-          results = seriesCards(home, 80).filter((it) =>
-            it.title.toLowerCase().indexOf(q.toLowerCase()) >= 0 ||
-            it.slug.toLowerCase().indexOf(q.toLowerCase().replace(/\s+/g, "-")) >= 0);
-        } catch (e2) { /* */ }
+          try { kino.log("ZonaTMO: search " + path); } catch (e) {}
+          const html = await getHtml(path);
+          results = seriesCards(html, 48);
+          if (results.length) break;
+        } catch (e) { /* next */ }
+      }
+      // filtrado local extra por si la página trae ruido
+      if (results.length) {
+        const ql = q.toLowerCase();
+        const scored = results.map((it) => {
+          const t = (it.title || "").toLowerCase();
+          let s = 0;
+          if (t === ql) s = 100;
+          else if (t.indexOf(ql) === 0) s = 80;
+          else if (t.indexOf(ql) >= 0) s = 60;
+          else {
+            const parts = ql.split(/\s+/).filter(Boolean);
+            s = parts.filter((p) => t.indexOf(p) >= 0).length * 15;
+          }
+          return { it, s };
+        }).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
+        if (scored.length) results = scored.map((x) => x.it);
       }
       return {
         state: { results, resultsQ: q },
         toast: results.length ? results.length + " resultados" : "Sin resultados",
       };
+    }
     }
     if (name === "fav") {
       const d = state.detail;
@@ -784,13 +850,35 @@ export async function screenEvent(ev) {
       const ch = chapters[idx];
       let images = readerCache(ch.url);
       if (!images) {
-        const html = await getHtml(ch.path || ch.url.replace(BASE, ""));
-        images = readerImages(html);
-        if (images.length) readerCachePut(ch.url, images);
+        const uid = ch.id || (ch.path || "").replace(/\D/g, "") || "";
+        const candidates = [
+          ch.path || ch.url.replace(BASE, ""),
+          uid ? "/viewer/" + uid + "/cascade" : null,
+          uid ? "/viewer/" + uid : null,
+          uid ? "/view_uploads/" + uid : null,
+        ].filter(Boolean);
+        for (const p of candidates) {
+          try {
+            try { kino.log("ZonaTMO: try reader " + p); } catch (e) {}
+            const html = await getHtml(p);
+            images = readerImages(html);
+            if (images.length) break;
+            // a veces el HTML solo redirige: buscar URL cascade en el cuerpo
+            const cm = html.match(/\/viewer\/(\d+)\/cascade/);
+            if (cm) {
+              const html2 = await getHtml("/viewer/" + cm[1] + "/cascade");
+              images = readerImages(html2);
+              if (images.length) break;
+            }
+          } catch (e) {
+            try { kino.log("ZonaTMO: reader fail " + p + " " + (e.message || e)); } catch (e2) {}
+          }
+        }
+        if (images && images.length) readerCachePut(ch.url, images);
       }
-      if (!images.length) {
+      if (!images || !images.length) {
         return {
-          toast: "No se encontraron páginas en este capítulo. El visor de ZonaTMO carga las imágenes de forma dinámica.",
+          toast: "No se encontraron páginas. Prueba otro capítulo o revisa el log del plugin.",
         };
       }
       markRead(slug, title, poster, ch.title, ch.url);
@@ -801,12 +889,16 @@ export async function screenEvent(ev) {
     if (name === "openSeries") {
       const slug = String(arg || "");
       if (!slug || slug.indexOf("/") < 0) return { toast: "Slug inválido" };
-      const d = await loadSeries(slug);
-      return {
-        state: { detail: d },
-        route: { push: "detail", params: { slug } },
-        toast: d.chapters.length ? undefined : "No se encontraron capítulos (puede que la lista se cargue por JS).",
-      };
+      try {
+        const d = await loadSeries(slug);
+        return {
+          state: { detail: d },
+          route: { push: "detail", params: { slug } },
+          toast: d.chapters.length ? (d.chapters.length + " capítulos") : "Sin capítulos en el HTML",
+        };
+      } catch (e) {
+        return { toast: "Error al abrir: " + ((e && e.message) || "error") };
+      }
     }
   } catch (e) {
     return { toast: "Algo falló: " + ((e && e.code) || (e && e.message) || "error") };
