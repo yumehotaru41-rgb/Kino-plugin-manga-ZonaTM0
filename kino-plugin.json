@@ -3,7 +3,7 @@
   "name": "ZonaTMO",
   "author": "Community",
   "creator": "community",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "apiVersion": 14,
   "entry": "plugin.js",
   "hosts": [
