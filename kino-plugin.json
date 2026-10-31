@@ -3,24 +3,16 @@
   "name": "ZonaTMO",
   "author": "Community",
   "creator": "community",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "apiVersion": 14,
   "entry": "plugin.js",
-  "hosts": [
-    "zonatmo.org"
-  ],
-  "capabilities": [
-    "screen",
-    "shared"
-  ],
+  "hosts": ["zonatmo.org"],
+  "capabilities": ["screen", "shared"],
   "description": "Lee manga, manhwa y manhua de zonatmo.org. Inicio, biblioteca, favoritos, historial y lector vertical.",
   "screen": {
     "label": "ZonaTMO",
     "labelEn": "ZonaTMO",
     "menuOpens": "screen",
-    "opensFrom": [
-      "menu",
-      "settings"
-    ]
+    "opensFrom": ["menu", "settings"]
   }
 }
