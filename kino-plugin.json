@@ -1,0 +1,29 @@
+{
+  "id": "zonatm0",
+  "name": "ZonaTM0",
+  "author": "Hotaru Yume",
+  "creator": "hotaruyume",
+  "version": "1.0.0",
+  "apiVersion": 14,
+  "entry": "plugin.js",
+  "icon": "icon.png",
+  "hosts": [
+    "zonatmo.org",
+    "storage.zonatmo.org"
+  ],
+  "capabilities": [
+    "screen",
+    "shared"
+  ],
+  "description": "Lee obras de zonatmo.org: lector webcómic con modo tira o página a página (con zoom), buscador, favoritos y progreso sincronizados entre tus aparatos.",
+  "screen": {
+    "label": "ZonaTM0",
+    "labelEn": "ZonaTM0",
+    "iconFile": "icon.png",
+    "menuOpens": "screen",
+    "opensFrom": [
+      "menu",
+      "settings"
+    ]
+  }
+}

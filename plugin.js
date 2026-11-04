@@ -1,0 +1,1023 @@
+// Plugin de Kino para leer obras de zonatmo.org (ZonaTM0)
+// Interfaz tipo lector de manga: Inicio, Biblioteca, Favoritos,
+// Historial, detalle de obra con lista completa de capítulos y lector
+// webcómic vertical. Basado en la arquitectura del plugin de Yuri
+// Online, adaptado al sitio ZonaTM0 (Laravel, clon de TuMangaOnline):
+//   - Biblioteca por AJAX: GET /biblioteca?...&page=N  → JSON { html }
+//   - Ficha de obra:        /library/<tipo>/<id>/<slug>
+//   - Capítulos:            li.upload-link → enlaces /view_uploads/<id>
+//   - Lector:               /view_uploads/<id>, imágenes en
+//                           storage.zonatmo.org/chapters/<id>/<n>.webp
+// Funciona en teléfono y TV desde el mismo árbol de nodos.
+//
+// Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
+
+const BASE = "https://zonatmo.org";
+
+// ---------------------------------------------------------------- red
+
+async function getHtml(path) {
+  const r = await kino.fetch(BASE + path, { headers: { Accept: "text/html", Referer: BASE + "/" } });
+  if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
+    userMessage: "No se pudo conectar con ZonaTM0. Inténtalo de nuevo.",
+  });
+  return r.text();
+}
+
+// Biblioteca por AJAX: la rejilla de obras no viene en la página sino en
+// un fragmento HTML devuelto como JSON por /biblioteca (con cabeceras
+// de XMLHttpRequest). order: "created_at" (últimas) o "likes_count".
+async function getLibHtml(page, order, q) {
+  const url = BASE + "/biblioteca?title=" + encodeURIComponent(q || "") +
+    "&filter_by=title&order_item=" + (order || "likes_count") +
+    "&order_dir=desc&_pg=1&page=" + page;
+  const r = await kino.fetch(url, {
+    headers: {
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      Referer: BASE + "/biblioteca",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+  });
+  if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
+    userMessage: "No se pudo conectar con ZonaTM0. Inténtalo de nuevo.",
+  });
+  const txt = await r.text();
+  let frag = "";
+  const j = txt.indexOf("{");
+  if (j >= 0) {
+    try { frag = JSON.parse(txt.slice(j)).html || ""; } catch (e) { /* abajo */ }
+  }
+  // Si no llegó JSON (una versión distinta del sitio), se usa lo que sea
+  // que haya devuelto: la rejilla completa también sirve.
+  return frag || txt;
+}
+
+// ------------------------------------------------------------- scraping
+
+function clean(s) {
+  return String(s)
+    .replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, " ").replace(/&#\d+;/g, "")
+    .replace(/\s+/g, " ").trim();
+}
+
+function absUrl(u) {
+  if (!u) return "";
+  u = String(u).trim();
+  if (u.indexOf("//") === 0) return "https:" + u;
+  if (u.indexOf("/") === 0) return BASE + u;
+  return u;
+}
+
+// Tarjetas de obras: enlaces .../library/<tipo>/<id>/<slug>/
+// El slug interno de una obra es "tipo/id/slug" (se valida al usarlo).
+// Las novelas (tipo novel/novela) son texto sin páginas: se saltan.
+function seriesCards(html, max) {
+  const out = [];
+  const seen = {};
+  const re = /href="(?:https:\/\/zonatmo\.org)?\/library\/([a-z_-]+)\/(\d+)\/([a-z0-9-]+)\/?"/g;
+  let m;
+  while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
+    const type = m[1], id = m[2], name = m[3];
+    if (seen[id] || type === "page") continue;
+    seen[id] = true;
+    if (type === "novel" || type === "novela") continue;
+    const slug = type + "/" + id + "/" + name;
+    const url = BASE + "/library/" + slug + "/";
+    const win = html.slice(m.index, m.index + 3500);
+    // título: atributo title del h4 (con el texto completo) o su contenido
+    let title = "";
+    const th = win.match(/<h4[^>]*\btitle="([^"]{1,200})"/) || win.match(/<h4[^>]*>\s*([^<]{1,200})</);
+    if (th) title = clean(th[1]);
+    if (!title) title = name.replace(/-/g, " ");
+    // portada: img (quizá con lazy-load) o fondo data-bg / style url()
+    let poster = "";
+    const im = win.match(/<img[^>]+(?:data-src|data-lazy-src|data-original|src)="([^"]+)"/);
+    if (im && !/^data:/.test(im[1])) poster = absUrl(im[1]);
+    if (!poster) {
+      const bg = win.match(/data-bg="([^"]+)"/);
+      if (bg) poster = absUrl(bg[1]);
+    }
+    if (!poster) {
+      const st = win.match(/background-image:\s*url\(['"]?([^'")]+)['"]?\s*\)/);
+      if (st) poster = absUrl(st[1]);
+    }
+    out.push({ slug, url, poster, title });
+  }
+  return out;
+}
+
+function natCmp(a, b) {
+  const A = String(a).match(/\d+|\D+/g) || [], B = String(b).match(/\d+|\D+/g) || [];
+  for (let i = 0; i < Math.max(A.length, B.length); i++) {
+    const x = A[i] || "", y = B[i] || "";
+    if (/^\d+$/.test(x) && /^\d+$/.test(y)) {
+      const d = parseInt(x, 10) - parseInt(y, 10);
+      if (d) return d;
+    } else {
+      const c = x.localeCompare(y);
+      if (c) return c;
+    }
+  }
+  return 0;
+}
+
+// Capítulos: filas li.upload-link con data-chapter-number y uno o más
+// enlaces a /view_uploads/<id> (uno por grupo de traducción).
+// Devuelve [{ url, id, num, title, scan }] deduplicados por URL.
+function chapterList(html) {
+  const map = new Map();
+  const rowRe = /<li[^>]*upload-link[^>]*>/g;
+  let m;
+  while ((m = rowRe.exec(html)) !== null) {
+    const end = html.indexOf("</li>", m.index);
+    const row = html.slice(m.index, end > 0 ? end : m.index + 6000);
+    const num = ((row.match(/data-chapter-number="([^"]*)"/) ||
+      row.match(/class="chapter-number"[^>]*data-number="([^"]*)"/) || [])[1] || "").trim();
+    const numN = (num.match(/\d+(?:\.\d+)?/) || [""])[0];
+    const upRe = /href="(?:https:\/\/zonatmo\.org)?\/view_uploads\/(\d+)\/?"/g;
+    let u;
+    while ((u = upRe.exec(row)) !== null) {
+      const url = BASE + "/view_uploads/" + u[1] + "/";
+      if (map.has(url)) continue;
+      // el grupo de traducción vive junto a su enlace "Leer online"
+      const near = row.slice(Math.max(0, u.index - 600), u.index + 600);
+      const sm = near.match(/href="[^"]*\/groups\/[^"]*"[^>]*>([^<]{1,60})</);
+      const scan = sm ? clean(sm[1]) : "";
+      map.set(url, {
+        url, id: u[1], num: numN || u[1], scan,
+        title: "Capítulo " + (numN || u[1]) + (scan ? " · " + scan : ""),
+      });
+    }
+  }
+  const arr = [...map.values()];
+  arr.sort((a, b) => natCmp(a.num, b.num) || (a.scan || "").localeCompare(b.scan || ""));
+  return arr;
+}
+
+// Metadatos de la página de una obra
+function seriesMeta(html, slug) {
+  const pick = (re) => { const m = html.match(re); return m ? clean(m[1]) : ""; };
+  let poster = "";
+  const im = html.match(/<img[^>]*class="[^"]*book-thumbnail[^"]*"[^>]*>/);
+  if (im) poster = absUrl((im[0].match(/(?:data-src|src)="([^"]+)"/) || [])[1]);
+  if (!poster) poster = pick(/property="og:image"[^>]*content="([^"]+)"/) || pick(/content="([^"]+)"[^>]*property="og:image"/);
+  let overview = "";
+  const sy = html.match(/id="manga-synopsis"[^>]*>([\s\S]{0,3000}?)<\/(?:p|div)>/);
+  if (sy) overview = clean(sy[1].replace(/<[^>]+>/g, " "));
+  if (!overview) overview = pick(/property="og:description"[^>]*content="([^"]+)"/);
+  // géneros: enlaces a /tag/
+  const genres = [];
+  const gre = /href="[^"]*\/tag\/[^"]*"[^>]*>([^<]{1,50})</g;
+  let g;
+  while ((g = gre.exec(html)) !== null && genres.length < 20) {
+    const t = clean(g[1]);
+    if (t && genres.indexOf(t) < 0) genres.push(t);
+  }
+  return {
+    title: pick(/<h1[^>]*class="[^"]*element-title[^"]*"[^>]*>([^<]{1,200})</) ||
+      pick(/property="og:title"[^>]*content="([^"]+)"/) || slug.split("/")[2].replace(/-/g, " "),
+    poster,
+    overview,
+    status: tmoLabel(html, "Estado"),
+    genres: genres.join(", "),
+    type: (slug.split("/")[0] || "").toUpperCase(),
+    author: tmoLabel(html, "Autor/es"),
+  };
+}
+
+// Valor que sigue a un subtítulo <h5 class="element-subtitle">Etiqueta</h5>
+function tmoLabel(html, label) {
+  const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+    "\\s*<\\/h5>\\s*<[^>]*>\\s*([^<]{1,200})", "i");
+  const m = html.match(re);
+  return m ? clean(m[1]) : labelValue(html, label);
+}
+
+function labelValue(html, label) {
+  const i = html.indexOf(label);
+  if (i < 0) return "";
+  const win = html.slice(i + label.length, i + label.length + 600);
+  const m = win.match(/>([^<]{1,200})</);
+  return m ? clean(m[1]) : "";
+}
+
+// Id del lector a partir de la URL del capítulo (/view_uploads/<id>/)
+function uploadIdDe(url) {
+  const m = String(url || "").match(/view_uploads\/(\d+)/);
+  return m ? m[1] : "";
+}
+
+// Imágenes de un capítulo: las páginas viven en
+// storage.zonatmo.org/chapters/<uploadId>/<n>.webp y se referencian desde
+// el lector (etiquetas img y precargas). Se escanea el HTML en bruto
+// limitado a las URLs que llevan el id del capítulo, así no se cuelan
+// portadas ni banners. Devuelve [{ url, w, h }].
+function readerImages(html, uploadId) {
+  const out = [], seen = {};
+  const re = new RegExp("https?:\\/\\/[^\"'\\s>]+\\/chapters\\/" + uploadId +
+    "\\/\\d+\\.(?:webp|jpe?g|png|avif|gif)", "g");
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (seen[m[0]]) continue;
+    seen[m[0]] = true;
+    out.push({ url: m[0], w: 0, h: 0 });
+  }
+  // última carta: las img propias del lector (class reader-image)
+  if (!out.length) {
+    const re2 = /<img[^>]*class="[^"]*reader-image[^"]*"[^>]*>/g;
+    let t;
+    while ((t = re2.exec(html)) !== null) {
+      const src = (t[0].match(/(?:data-src|data-lazy-src|data-original|src)="([^"]+)"/) || [])[1];
+      if (!src || seen[src]) continue;
+      seen[src] = true;
+      out.push({ url: absUrl(src), w: 0, h: 0 });
+    }
+  }
+  // orden por número de archivo (…/<n>.webp)
+  const num = (u) => parseInt((u.match(/\/(\d+)\.[a-z0-9]+(?:\?|$)/i) || [])[1], 10) || 0;
+  out.sort((a, b) => num(a.url) - num(b.url));
+  return out;
+}
+
+// Caja (dp) para una página de proporción r = alto/ancho (ver Yuri Online)
+const SIZE_SCALE = [16, 24, 32, 40, 48, 64, 80, 96, 120, 160, 200, 240, 320, 400, 480, 560, 640];
+
+// v1.4.2 (Yuri Online): fit "width" + aspect de la proporción medida:
+// la página toma el ancho completo de la caja y el alto de su proporción
+// real — la página vertical entera, nunca recortada.
+function aspectDe(p, ratioGuia) {
+  const w = (p && p.w) || 0, h = (p && p.h) || 0;
+  let ratio = w > 0 && h > 0 ? h / w : (ratioGuia || 1.4);
+  if (!(ratio >= 0.2)) ratio = 0.2;
+  if (ratio > 5) ratio = 5;
+  return "1:" + (Math.round(ratio * 100) / 100);
+}
+
+function pageNodes(p, i, ratioGuia) {
+  return [{
+    type: "Image", key: "p" + i, url: typeof p === "string" ? p : p.url,
+    alt: "Página " + (i + 1), altEn: "Page " + (i + 1),
+    fill: true, fit: "width", aspect: aspectDe(p, ratioGuia),
+    fallback: { type: "Column", padding: 16, children: [
+      { type: "Text", text: "Página " + (i + 1), textEn: "Page " + (i + 1), color: "muted" } ] },
+  }];
+}
+
+// Carga una obra: página de detalle + capítulos. En ZonaTM0 todas las
+// filas de capítulos (también las antiguas) ya están en el HTML.
+async function loadSeries(slug) {
+  if (!/^[a-z0-9][a-z0-9\/_-]*$/i.test(slug) || slug.indexOf("..") >= 0) {
+    throw kino.error("arguments", "slug");
+  }
+  const html = await getHtml("/library/" + slug + "/");
+  const meta = seriesMeta(html, slug);
+  const chapters = chapterList(html);
+  return { slug, meta, chapters };
+}
+
+// ------------------------------------------------- medir páginas
+// Receta de MangaTrack: descargar solo los primeros bytes de cada
+// imagen (kino.fetch maxBytes) y leer sus dimensiones del encabezado
+// (JPEG/PNG/GIF/WebP). Las páginas de ZonaTM0 son .webp sin
+// width/height en el HTML; así quedan medidas y la caja calza.
+function deB64(s) {
+  const ABC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const out = [];
+  let acc = 0, bits = 0;
+  for (let i = 0; i < s.length; i++) {
+    const v = ABC.indexOf(s.charAt(i));
+    if (v < 0) continue;
+    acc = (acc * 64) + v;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xFF); acc = acc % Math.pow(2, bits); }
+  }
+  return out;
+}
+
+function dimsDeBytes(b) {
+  if (!Array.isArray(b) || b.length < 12) return null;
+  if (b[0] === 0xFF && b[1] === 0xD8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xFF) { i++; continue; }
+      const m = b[i + 1];
+      if (m === 0x01 || (m >= 0xD0 && m <= 0xD9)) { i += 2; continue; }
+      const len = (b[i + 2] << 8) | b[i + 3];
+      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+        return { w: (b[i + 7] << 8) | b[i + 8], h: (b[i + 5] << 8) | b[i + 6] };
+      }
+      if (m === 0xDA) break;
+      i += 2 + len;
+    }
+    return null;
+  }
+  if (b[0] === 0x89 && b[1] === 0x50) {
+    return { w: (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19],
+      h: (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23] };
+  }
+  if (b[0] === 0x47 && b[1] === 0x49) return { w: b[6] | (b[7] << 8), h: b[8] | (b[9] << 8) };
+  // WebP: "RIFF"…"WEBP" y el primer chunk VP8X / VP8 / VP8L
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) {
+    const tag = String.fromCharCode(b[12], b[13], b[14], b[15]);
+    if (tag === "VP8X" && b.length > 30) {
+      const w = 1 + (b[24] | (b[25] << 8) | (b[26] << 16));
+      const h = 1 + (b[27] | (b[28] << 8) | (b[29] << 16));
+      return { w, h };
+    }
+    if (tag === "VP8 " && b.length > 30) {
+      const w = (b[26] | (b[27] << 8)) & 0x3FFF;
+      const h = (b[28] | (b[29] << 8)) & 0x3FFF;
+      return { w, h };
+    }
+    if (tag === "VP8L" && b.length > 25) {
+      const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24);
+      return { w: (bits & 0x3FFF) + 1, h: ((bits >> 14) & 0x3FFF) + 1 };
+    }
+    return null;
+  }
+  return null;
+}
+
+function hashUrl(u) {
+  let h = 5381;
+  for (let i = 0; i < u.length; i++) h = ((h * 33) + u.charCodeAt(i)) >>> 0;
+  return ("0000000" + h.toString(16)).slice(-8);
+}
+
+function dimsTodas() { return getJson("dims", {}); }
+
+function dimPut(nuevos) {
+  try {
+    const all = dimsTodas();
+    for (let i = 0; i < nuevos.length; i++) all[nuevos[i][0]] = nuevos[i][1];
+    const ks = Object.keys(all);
+    if (ks.length > 300) for (let i = 0; i < ks.length - 300; i++) delete all[ks[i]];
+    setJson("dims", all);
+  } catch (e) { kino.log("dims", "guardar: " + e.message); }
+}
+
+async function dimsDeImagen(url) {
+  try {
+    const r = await kino.fetch(url, { maxBytes: 16384, timeoutMs: 5000,
+      headers: { Referer: BASE + "/" } });
+    if (!r.ok) return null;
+    const d = dimsDeBytes(deB64(r.base64()));
+    return d && d.w > 0 && d.h > 0 ? d : null;
+  } catch (e) { return null; }
+}
+
+// Mide (con el caché primero) las páginas que vengan sin dimensiones,
+// en lotes de 12 y con tope de tiempo para no eternizar la apertura.
+async function medirImagenes(images, presupuesto) {
+  const t0 = Date.now();
+  const cache = dimsTodas();
+  const pend = [];
+  let listas = 0;
+  for (let i = 0; i < images.length; i++) {
+    const im = images[i];
+    if (im.w > 0 && im.h > 0) { listas++; continue; }
+    const c = cache[hashUrl(im.url)];
+    if (Array.isArray(c) && c[0] > 0 && c[1] > 0) { im.w = c[0]; im.h = c[1]; listas++; continue; }
+    pend.push(im);
+  }
+  const nuevas = [];
+  let hechas = 0;
+  for (let i = 0; i < pend.length && hechas < 48; i += 12) {
+    if (Date.now() - t0 > (presupuesto || 6000)) break;
+    const lote = pend.slice(i, Math.min(pend.length, i + 12, i + 48 - hechas));
+    hechas += lote.length;
+    const rs = await Promise.all(lote.map((im) => dimsDeImagen(im.url).catch(() => null)));
+    for (let j = 0; j < lote.length; j++) {
+      if (rs[j]) {
+        lote[j].w = rs[j].w; lote[j].h = rs[j].h;
+        listas++;
+        nuevas.push([hashUrl(lote[j].url), [lote[j].w, lote[j].h]]);
+      }
+    }
+  }
+  if (nuevas.length) dimPut(nuevas);
+  return listas;
+}
+
+// Proporción mediana de las páginas medidas (receta de MangaTrack).
+function ratioGuiaDe(pages) {
+  const medidas = pages.filter((p) => p && p.w > 0 && p.h > 0).map((p) => p.h / p.w);
+  if (!medidas.length) return 0;
+  medidas.sort((a, b) => a - b);
+  return medidas[parseInt((medidas.length - 1) / 2, 10)];
+}
+
+// ------------------------------------------------------------ almacen
+
+function getJson(key, fallback) {
+  try {
+    const v = kino.storage.get(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch (e) { return fallback; }
+}
+function setJson(key, val) {
+  try { kino.storage.set(key, JSON.stringify(val)); } catch (e) { kino.log("storage", e.message); }
+}
+function favs() { return getJson("favs", []); }
+function isFav(slug) { return favs().some((f) => f.slug === slug); }
+function progress() { return getJson("prog", {}); }
+
+function markRead(slug, title, poster, chTitle, url) {
+  const p = progress();
+  p[slug] = { title, poster, chTitle, url, ts: Date.now() };
+  setJson("prog", p);
+  syncPush("prog", p);
+}
+
+// ---------------------------------------------- sincronización (kino.shared)
+
+function syncPush(key, val) {
+  try {
+    if (typeof kino.shared === "object" && kino.shared !== null) kino.shared.set(key, val);
+  } catch (e) { kino.log("sync", e.message); }
+}
+
+function slugValido(s) {
+  return typeof s === "string" && /^[a-z0-9][a-z0-9\/_-]*$/i.test(s) && s.indexOf("..") < 0;
+}
+
+function syncPull() {
+  try {
+    if (typeof kino.shared !== "object" || kino.shared === null) return;
+    const sf = kino.shared.get("favs");
+    if (Array.isArray(sf)) {
+      const local = favs();
+      const have = {};
+      for (const f of local) have[f.slug] = true;
+      let changed = false;
+      for (const f of sf.slice(0, 200)) {
+        if (!f || typeof f !== "object" || !slugValido(f.slug)) continue;
+        if (have[f.slug]) continue;
+        local.push({ slug: f.slug, title: String(f.title || f.slug).slice(0, 200),
+          poster: typeof f.poster === "string" ? f.poster.slice(0, 500) : "" });
+        have[f.slug] = true; changed = true;
+      }
+      if (changed) { setJson("favs", local); syncPush("favs", local); }
+    }
+    const sp = kino.shared.get("prog");
+    if (sp && typeof sp === "object" && !Array.isArray(sp)) {
+      const p = progress();
+      let changed = false;
+      for (const k of Object.keys(sp).slice(0, 200)) {
+        if (!slugValido(k)) continue;
+        const e = sp[k];
+        if (!e || typeof e !== "object" || typeof e.url !== "string" || typeof e.ts !== "number") continue;
+        if (p[k] && (p[k].ts || 0) >= e.ts) continue;
+        p[k] = { title: String(e.title || k).slice(0, 200),
+          poster: typeof e.poster === "string" ? e.poster.slice(0, 500) : "",
+          chTitle: String(e.chTitle || e.url).slice(0, 200),
+          url: e.url.slice(0, 500), ts: e.ts };
+        changed = true;
+      }
+      if (changed) { setJson("prog", p); syncPush("prog", p); }
+    }
+  } catch (e) { kino.log("sync", e.message); }
+}
+
+// caché de lector (últimos capítulos abiertos), para no volver a pedir
+function readerCache(url) { return getJson("rc:" + url, null); }function readerCachePut(url, images) {
+  try {
+    const keys = kino.storage.keys().filter((k) => k.indexOf("rc:") === 0);
+    if (keys.length > 4) for (const k of keys.slice(0, keys.length - 4)) kino.storage.remove(k);
+  } catch (e) { /* la app vieja no lista */ }
+  setJson("rc:" + url, images);
+}
+
+// ----------------------------------------------------------- interfaz
+
+const TABS = [
+  { value: "inicio", label: "Inicio", labelEn: "Home" },
+  { value: "biblioteca", label: "Biblioteca", labelEn: "Library" },
+  { value: "favoritos", label: "Favoritos", labelEn: "Favourites" },
+  { value: "historial", label: "Historial", labelEn: "History" },
+];
+
+// Título partido en dos filas (ver Yuri Online)
+function twoLines(t) {
+  const s = (t || "").trim();
+  if (s.length <= 26) return [s];
+  const mid = Math.ceil(s.length / 2);
+  let cut = -1, best = 999;
+  for (let i = 8; i < s.length - 3; i++) {
+    if (s[i] === " ") { const d = Math.abs(i - mid); if (d < best) { best = d; cut = i; } }
+  }
+  if (cut < 0) cut = mid;
+  let a = s.slice(0, cut).trim(), b = s.slice(cut).trim();
+  if (a.length > 34) a = a.slice(0, 33).trim() + "…";
+  if (b.length > 34) b = b.slice(0, 33).trim() + "…";
+  return [a, b];
+}
+
+function posterCard(it, prefix, rail) {
+  const img = {
+    type: "Image", url: it.poster || "", aspect: "2:3",
+    alt: it.title, altEn: it.title,
+    fallback: { type: "Column", padding: 16, crossAxisAlignment: "center", children: [
+      { type: "Icon", name: "list", color: "muted" } ] },
+  };
+  if (rail) img.width = 120;
+  return {
+    type: "Card", key: prefix + it.slug.replace(/[^a-z0-9]/gi, "-"), flush: true,
+    onTap: { event: "openSeries", arg: it.slug },
+    children: [img].concat(twoLines(it.title).map((ln) => (
+      { type: "Text", text: ln, textEn: ln, style: "caption", padding: 8 }))),
+  };
+}
+
+const EMPTY_LIB = { type: "emptyState", icon: "list", title: "Nada por aquí todavía.", titleEn: "Nothing here yet." };
+const EMPTY_FAV = { type: "emptyState", icon: "heart", title: "Marca obras con el corazón para verlas aquí.", titleEn: "Mark works with the heart to see them here." };
+
+function titleGridOf(items, eventMore, loading, done, emptyNode) {
+  if (!items || !items.length) return emptyNode || EMPTY_LIB;
+  const list = {
+    type: "ListView", key: "grid",
+    columns: { compact: 3, medium: 4, expanded: 6 },
+    items: items.map((it) => posterCard(it, "c-")),
+  };
+  if (eventMore && !done) {
+    list.onEndReached = { event: eventMore };
+    list.loadingMore = loading === true;
+  } else {
+    list.done = true;
+  }
+  return list;
+}
+
+function historyList() {
+  const p = progress();
+  const rows = Object.keys(p).map((slug) => ({ slug, p: p[slug] }))
+    .sort((a, b) => b.p.ts - a.p.ts).slice(0, 50);
+  if (!rows.length) {
+    return { type: "emptyState", icon: "schedule", title: "Todavía no has leído nada.", titleEn: "You have not read anything yet." };
+  }
+  return {
+    type: "ListView", key: "hist",
+    items: rows.map((r) => ({
+      type: "ListTile", key: "h-" + r.slug.replace(/[^a-z0-9]/gi, "-"),
+      title: r.p.title || r.slug,
+      subtitle: r.p.chTitle || "", subtitleEn: r.p.chTitle || "",
+      leading: { type: "CircleAvatar", image: r.p.poster, icon: "list" },
+      onTap: { event: "openSeries", arg: r.slug },
+    })),
+  };
+}
+
+async function tabBody(state) {
+  const tab = state.tab || "inicio";
+  if (tab === "favoritos") return titleGridOf(favs(), null, false, true, EMPTY_FAV);
+  if (tab === "historial") return historyList();
+  if (tab === "biblioteca") {
+    const items = Array.isArray(state.libItems) ? state.libItems : await fetchLibrary(1);
+    return titleGridOf(items, "libMore", state.libLoading === true, state.libDone === true);
+  }
+  return await homeBody(state);
+}
+
+// Biblioteca: las obras más populares (por "me gusta"), paginadas
+async function fetchLibrary(page) {
+  const html = await getLibHtml(page, "likes_count", "");
+  return seriesCards(html, 36);
+}
+
+// Inicio: riel con lo más reciente (por fecha de subida)
+async function homeBody(state) {
+  let items = Array.isArray(state.inicioItems) ? state.inicioItems : null;
+  if (!items) {
+    const html = await getLibHtml(1, "created_at", "");
+    items = seriesCards(html, 30);
+  }
+  if (!items.length) return EMPTY_LIB;
+  const rail = (title, titleEn, key, list) => list.length ? [
+    { type: "Text", text: title, textEn: titleEn, style: "h3", padding: 16 },
+    { type: "SingleChildScrollView", key: key, direction: "horizontal", padding: 16,
+      children: [{ type: "Row", gap: 8, children: list.slice(0, 60).map((it) => posterCard(it, key + "-", true)) }] },
+  ] : [];
+  const prog = progress();
+  const leyendo = Object.keys(prog)
+    .map((slug) => ({ slug, title: prog[slug].title, poster: prog[slug].poster, ts: prog[slug].ts || 0 }))
+    .filter((x) => x.title)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 20);
+  return {
+    type: "SingleChildScrollView", key: "home", flex: 1,
+    children: [{
+      type: "Column", children: [
+        { type: "ListTile", key: "searchTile", leading: { type: "Icon", name: "search" },
+          title: "Buscar obra", titleEn: "Search a work",
+          subtitle: "Por título, p. ej. Solo Leveling", subtitleEn: "By title, e.g. Solo Leveling",
+          trailing: { type: "Icon", name: "arrow_forward" },
+          onTap: { event: "goSearch" } },
+      ].concat(rail("Últimas obras", "Latest works", "latest", items))
+        .concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
+        .concat(rail("Mis favoritos", "My favourites", "favs", favs())),
+    }],
+  };
+}
+
+// ------------------------------------------------------------- rutas
+
+function routeSlug(r) {
+  if (!r) return "";
+  return String((r.args && r.args.slug) || (r.params && r.params.slug) || r.slug || "");
+}
+
+function loadingTree(msg) {
+  return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
+    { type: "CircularProgressIndicator" },
+    { type: "Text", text: msg || "Cargando…", textEn: "Loading…", color: "muted" },
+  ] };
+}
+
+async function detailTree(state) {
+  const d = state.detail;
+  if (!d) return loadingTree();
+  const fav = isFav(d.slug);
+  if (!Array.isArray(d.chapters) || !d.chapters.length) {
+    return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
+      { type: "Icon", name: "error", color: "muted" },
+      { type: "Text", text: "No se encontraron capítulos para esta obra.", textEn: "No chapters found for this work.", color: "muted" },
+      { type: "ElevatedButton", icon: "arrow_back", labelText: "Volver", labelTextEn: "Back",
+        onPressed: { event: "popBack" } },
+    ] };
+  }
+  const cover = d.meta.poster
+    ? { type: "Image", url: d.meta.poster, width: { compact: 120, expanded: 160 },
+        aspect: "2:3", alt: d.meta.title,
+        fallback: { type: "Icon", name: "list" } }
+    : { type: "Icon", name: "list" };
+  const head = {
+    type: "Row", gap: 16, padding: 16, crossAxisAlignment: "start", stackOnNarrow: true,
+    children: [
+      cover,
+      { type: "Column", gap: 6, flex: 2, crossAxisAlignment: "start", children: [
+        { type: "Text", text: d.meta.title || d.slug, style: "h2" },
+        d.meta.type ? { type: "Text", text: d.meta.type, color: "muted" } : null,
+        d.meta.status ? { type: "Badge", text: d.meta.status } : null,
+        d.meta.author ? { type: "Text", text: d.meta.author, color: "muted", style: "caption" } : null,
+        d.meta.genres ? { type: "Text", text: "Géneros: " + d.meta.genres, textEn: "Genres: " + d.meta.genres, color: "muted", style: "caption" } : null,
+        { type: "Text", text: d.meta.overview, style: "p", color: "muted" },
+        {
+          type: "Row", gap: 8, wrap: true, children: [
+            (function () {
+              const pg = progress()[d.slug];
+              const ci = pg && typeof pg.url === "string" ? d.chapters.findIndex((c) => c.url === pg.url) : -1;
+              if (ci > 0) {
+                const contLabel = ("Continuar: " + (pg.chTitle || d.chapters[ci].title)).slice(0, 60);
+                return { type: "ElevatedButton", key: "cont", icon: "play",
+                  labelText: contLabel, labelTextEn: contLabel,
+                  onPressed: { event: "read", arg: String(ci) } };
+              }
+              return { type: "ElevatedButton", key: "start", icon: "play",
+                labelText: "Empezar a leer", labelTextEn: "Start reading",
+                onPressed: { event: "read", arg: "0" } };
+            })(),
+            { type: "ElevatedButton", key: "latest", icon: "expand_more",
+              labelText: "Leer lo último", labelTextEn: "Read latest",
+              onPressed: { event: "read", arg: String(d.chapters.length - 1) } },
+            { type: "ElevatedButton", key: "fav", icon: fav ? "heart" : "star",
+              labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
+              labelTextEn: fav ? "Remove favourite" : "Add favourite",
+              onPressed: "fav" },
+          ],
+        },
+      ].filter(Boolean) },
+    ],
+  };
+  const items = [head];
+  items.push({ type: "Text", text: d.chapters.length + " capítulos", textEn: d.chapters.length + " chapters", style: "h3", padding: 16 });
+  for (let i = 0; i < d.chapters.length; i++) {
+    const c = d.chapters[i];
+    items.push({
+      type: "ListTile", key: "ch" + i, dense: true,
+      title: c.title,
+      onTap: { event: "read", arg: String(i) },
+      trailing: { type: "Icon", name: "arrow_forward" },
+    });
+  }
+  return {
+    type: "Scaffold",
+    appBar: {
+      title: d.meta.title || d.slug,
+      leading: { type: "IconButton", key: "backHome", icon: "arrow_back",
+        labelText: "Atrás", labelTextEn: "Back",
+        onPressed: { event: "popBack" } },
+      actions: [],
+    },
+    body: { type: "ListView", key: "detailBody", items },
+  };
+}
+
+// contador de navegación entre capítulos
+let navSeq = 0;
+
+// Modo páginas (Kino 0.9.81, receta de MangaTrack)
+function pagesDisponible() {
+  try {
+    return typeof kino === "object" && kino !== null &&
+      typeof kino.screen === "object" && kino.screen !== null &&
+      Array.isArray(kino.screen.widgets) &&
+      kino.screen.widgets.indexOf("pages") >= 0;
+  } catch (e) { return false; }
+}
+
+function modoLectorPref() {
+  return getJson("modoLector", "tira") === "paginas" ? "paginas" : "tira";
+}
+
+function modoLectorEfectivo(n) {
+  const puede = pagesDisponible() && n >= 2 && n <= 250;
+  return puede && modoLectorPref() === "paginas" ? "paginas" : "tira";
+}
+
+function paginaFit(p, i, ratioGuia) {
+  return { type: "SingleChildScrollView", key: "z" + i, zoom: true, children: [
+    { type: "Image", key: "p" + i, url: typeof p === "string" ? p : p.url,
+      alt: "Página " + (i + 1), altEn: "Page " + (i + 1),
+      fill: true, fit: "width", aspect: aspectDe(p, ratioGuia) } ] };
+}
+
+async function readerTree(state) {
+  const r = state.reader;
+  if (!r) return loadingTree();
+  const pages = r.images || [];
+  const chapters = Array.isArray(r.chapters) ? r.chapters : [];
+  const ch = chapters[r.idx];
+  if (!ch || !pages.length) {
+    return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
+      { type: "Icon", name: "error", color: "muted" },
+      { type: "Text", text: "No se pudieron cargar las páginas de este capítulo.", textEn: "Could not load this chapter's pages.", color: "muted" },
+      { type: "ElevatedButton", icon: "arrow_back", labelText: "Volver", labelTextEn: "Back",
+        onPressed: { event: "popBack" } },
+    ] };
+  }
+  const hasNext = r.idx + 1 < chapters.length;
+  const hasPrev = r.idx > 0;
+  const chKey = String(ch ? ch.url : r.idx).replace(/[^a-z0-9]/gi, "").slice(-16);
+  const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
+  const ratioGuia = ratioGuiaDe(pages);
+  const modo = modoLectorEfectivo(pages.length);
+  const inm = getJson("lectorInm", 0) ? true : false;
+  const body = [];
+  if (modo === "paginas") {
+    body.push({
+      type: "pages", key: "pgs", flex: 1, progress: "bar", onPageChanged: "pgChanged",
+      children: pages.map((p, i) => paginaFit(p, i, ratioGuia)),
+    });
+  } else {
+    body.push({
+      type: "SingleChildScrollView", key: scrollKey, flex: 1, zoom: true,
+      children: [{
+        type: "Column", gap: 4, crossAxisAlignment: "center", fill: true,
+        children: pages.flatMap((p, i) => pageNodes(p, i, ratioGuia)),
+      }],
+    });
+  }
+  if (!inm) body.push({
+    type: "Row", gap: 12, padding: 16, mainAxisAlignment: "center", wrap: true, children: [
+      { type: "ElevatedButton", icon: "arrow_back", labelText: "Anterior", labelTextEn: "Previous",
+        onPressed: "prevChap", enabled: hasPrev },
+      { type: "DropdownButton", key: "jumpChap", labelText: "Ir a capítulo", labelTextEn: "Go to chapter",
+        value: String(r.idx), onChanged: "jumpChap",
+        options: chapters.length
+          ? chapters.map((c, i) => ({ value: String(i), label: c.title }))
+          : [{ value: "0", label: "—" }] },
+      { type: "ElevatedButton", labelText: hasNext ? "Siguiente" : "Último capítulo",
+        labelTextEn: hasNext ? "Next" : "Last chapter",
+        icon: "arrow_forward", onPressed: "nextChap", enabled: hasNext },
+    ].concat(pagesDisponible() ? [
+      { type: "TextButton", key: "btnModo", labelText: modo === "paginas" ? "Modo tira" : "Modo páginas",
+        labelTextEn: modo === "paginas" ? "Strip mode" : "Page mode", onPressed: "modoLector" },
+    ] : []).concat([
+      { type: "TextButton", key: "btnPantalla", icon: "visibility",
+        labelText: "Pantalla completa", labelTextEn: "Fullscreen", onPressed: "lectorInm" },
+      { type: "Text",
+        text: "cap. " + (r.idx + 1) + " de " + chapters.length + " · pellizca para acercar",
+        textEn: "ch. " + (r.idx + 1) + " of " + chapters.length, style: "caption", color: "muted" },
+    ]),
+  });
+  const raiz = {
+    type: "Scaffold",
+    appBar: inm ? undefined : { type: "AppBar", mergeWithKinoBar: true, dense: true, key: "barReader",
+      title: ch ? ch.title : "Leyendo",
+      leading: { type: "IconButton", key: "backFromReader", icon: "arrow_back",
+        labelText: "Atrás", labelTextEn: "Back",
+        onPressed: { event: "popBack" } },
+      actions: [
+        { type: "IconButton", key: "verBarra", icon: "visibility",
+          labelText: "Pantalla completa (ocultar botones)", labelTextEn: "Fullscreen (hide buttons)",
+          onPressed: { event: "lectorInm" } },
+      ] },
+    body: { type: "Column", children: body },
+  };
+  if (inm) raiz.floatingActionButton = { type: "FloatingActionButton", key: "verBarras",
+    icon: "visibility", tooltip: "Mostrar botones", tooltipEn: "Show buttons",
+    onPressed: { event: "lectorInm" } };
+  return raiz;
+}
+
+async function searchTree(state) {
+  const q = typeof state.resultsQ === "string" ? state.resultsQ : "";
+  const results = Array.isArray(state.results) ? state.results : null;
+  return {
+    type: "Scaffold",
+    appBar: { title: "Buscar obra", titleEn: "Search a work", actions: [] },
+    body: {
+      type: "SingleChildScrollView", key: "searchBody",
+      children: [{
+        type: "Column", children: [
+          { type: "Form", key: "search", onSubmitted: "search", gap: 8, padding: 16, children: [
+            { type: "TextField", key: "q", kind: "search", value: q,
+              labelText: "Título", labelTextEn: "Title",
+              hintText: "P. ej. Solo Leveling", hintEn: "e.g. Solo Leveling",
+              required: true },
+            { type: "ElevatedButton", icon: "search", labelText: "Buscar", labelTextEn: "Search", submit: true },
+          ] },
+          results
+            ? (results.length ? titleGridOf(results) : { type: "emptyState", icon: "search", title: "Sin resultados.", titleEn: "No results." })
+            : { type: "Text", text: "Escribe un título y pulsa Buscar.", textEn: "Type a title and press Search.", color: "muted", padding: 16 },
+        ].filter(Boolean),
+      }],
+    },
+  };
+}
+
+// --------------------------------------------------------- los exports
+
+export async function screen({ state, route }) {
+  const r = route || { name: "home" };
+  try {
+    if (r.name === "detail") {
+      const slug = routeSlug(r);
+      if (!state.detail || state.detail.slug !== slug) return loadingTree();
+      return await detailTree(state);
+    }
+    if (r.name === "read") return await readerTree(state);
+    if (r.name === "search") return searchTree(state);
+  } catch (e) {
+    return {
+      type: "Column", padding: 16, gap: 8, children: [
+        { type: "Icon", name: "error", color: "muted" },
+        { type: "Text", text: "No se pudo cargar (" + (e.code || "error") + ").", textEn: "Could not load (" + (e.code || "error") + ").", color: "muted" },
+        { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry", onPressed: { event: "retry" } },
+      ],
+    };
+  }
+  // ruta raíz: pestañas
+  const body = await tabBody(state);
+  return {
+    type: "Scaffold",
+    appBar: {
+      title: "ZonaTM0",
+      actions: [
+        { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
+      ],
+      bottom: {
+        type: "TabBar", key: "tabs", tabs: TABS,
+        value: state.tab || "inicio", onChanged: { event: "tab" },
+      },
+    },
+    body,
+  };
+}
+
+export async function screenEvent(ev) {
+  const name = ev.name;
+  const state = ev.state || {};
+  try {
+    if (name === "open") {
+      syncPull();
+      const r = ev.route || {};
+      if (r.name === "detail") {
+        const slug = routeSlug(r);
+        if (slug && slugValido(slug) && (!state.detail || state.detail.slug !== slug)) {
+          const d = await loadSeries(slug);
+          if (!d.chapters.length) return { toast: "No se encontraron capítulos." };
+          return { state: { detail: d } };
+        }
+      }
+      return null;
+    }
+    if (name === "tab") {
+      const tab = ev.value;
+      const patch = { tab };
+      if (tab === "biblioteca" && !Array.isArray(state.libItems)) {
+        patch.libItems = await fetchLibrary(1);
+        patch.libPage = 1;
+      }
+      return { state: patch };
+    }
+    if (name === "libMore") {
+      const page = (state.libPage || 1) + 1;
+      const more = await fetchLibrary(page);
+      const merged = (state.libItems || []).concat(more.filter((x) => !(state.libItems || []).some((y) => y.slug === x.slug)));
+      return { state: { libItems: merged, libPage: page, libDone: more.length < 36 } };
+    }
+    if (name === "goSearch") return { route: { push: "search" } };
+    if (name === "popBack") return { route: { pop: true } };
+    if (name === "search") {
+      const q = String(ev.value && ev.value.q || "").trim();
+      if (!q) return { toast: "Escribe un título." };
+      const html = await getLibHtml(1, "likes_count", q);
+      const results = seriesCards(html, 40);
+      return { state: { results, resultsQ: q },
+        toast: results.length ? results.length + " resultados" : "Sin resultados" };
+    }
+    if (name === "retry") return { state: { _r: Date.now() } };
+    if (name === "fav") {
+      const d = state.detail;
+      if (!d) return null;
+      const f = favs();
+      const i = f.findIndex((x) => x.slug === d.slug);
+      let added = false;
+      if (i >= 0) f.splice(i, 1);
+      else { f.unshift({ slug: d.slug, title: d.meta.title || d.slug, poster: d.meta.poster }); added = true; }
+      setJson("favs", f);
+      syncPush("favs", f);
+      return { toast: added ? "Añadida a favoritos" : "Quitada de favoritos" };
+    }
+    if (name === "read" || name === "nextChap" || name === "prevChap" || name === "jumpChap") {
+      let chapters, idx, slug, title, poster;
+      if (name === "read") {
+        const d = state.detail;
+        if (!d) return null;
+        chapters = d.chapters;
+        idx = parseInt(String(ev.arg || "0"), 10) || 0;
+        slug = d.slug; title = d.meta.title; poster = d.meta.poster;
+        if (idx < 0 || idx >= chapters.length) return null;
+      } else {
+        const r = state.reader;
+        if (!r) return null;
+        chapters = r.chapters;
+        idx = name === "jumpChap"
+          ? parseInt(String(ev.value || "0"), 10) || 0
+          : r.idx + (name === "nextChap" ? 1 : -1);
+        slug = r.slug; title = r.title; poster = r.poster;
+        if (idx < 0 || idx >= chapters.length) return null;
+      }
+      const ch = chapters[idx];
+      const upId = uploadIdDe(ch.url);
+      let images = readerCache(ch.url);
+      if (!images || !upId || !images.length) {
+        const html = await getHtml(ch.url.replace(BASE, ""));
+        images = readerImages(html, upId || ch.id);
+        if (images.length) readerCachePut(ch.url, images);
+      }
+      if (!images.length) return { toast: "No se encontraron páginas en este capítulo." };
+      try { await medirImagenes(images, 6000); } catch (e) { kino.log("dims", e.message); }
+      markRead(slug, title, poster, ch.title, ch.url);
+      const reader = { slug, title, poster, chapters, idx, images, tk: ++navSeq };
+      const resp = { state: { reader } };
+      if (name === "read") resp.route = { push: "read" };
+      if (modoLectorEfectivo(images.length) === "paginas") {
+        let at = parseInt(getJson("pg:" + ch.url, 0), 10);
+        if (!(at >= 0) || at >= images.length) at = 0;
+        resp.ui = [{ set: { key: "pgs", value: at } }];
+      }
+      return resp;
+    }
+    if (name === "pgChanged") {
+      const r = state.reader;
+      if (!r) return null;
+      const ch = (r.chapters || [])[r.idx];
+      if (!ch || !ch.url) return null;
+      let at = parseInt(String(ev.value === undefined ? "" : ev.value), 10);
+      if (!(at >= 0)) at = 0;
+      const ks = [];
+      try {
+        for (const k of kino.storage.keys()) if (k.indexOf("pg:") === 0) ks.push(k);
+      } catch (e) { }
+      if (ks.length > 300) for (const k of ks.slice(0, ks.length - 300)) try { kino.storage.remove(k); } catch (e) { }
+      try { kino.storage.set("pg:" + ch.url, String(at)); } catch (e) { }
+      return null;
+    }
+    if (name === "lectorInm") {
+      setJson("lectorInm", getJson("lectorInm", 0) ? 0 : 1);
+      return { state: { _r: Date.now() } };
+    }
+    if (name === "modoLector") {
+      if (!pagesDisponible()) return null;
+      const nuevo = modoLectorPref() === "paginas" ? "tira" : "paginas";
+      setJson("modoLector", nuevo);
+      return { state: { _r: Date.now() },
+        toast: nuevo === "paginas" ? "Modo páginas" : "Modo tira" };
+    }
+    if (name === "openSeries") {
+      const slug = String(ev.arg || "");
+      if (!slugValido(slug)) return null;
+      const d = await loadSeries(slug);
+      if (!d.chapters.length) return { toast: "No se encontraron capítulos." };
+      return { state: { detail: d },
+               route: { push: "detail", params: { slug } } };
+    }
+  } catch (e) {
+    return { toast: "Algo falló: " + (e.code || "error") };
+  }
+  return null;
+}
