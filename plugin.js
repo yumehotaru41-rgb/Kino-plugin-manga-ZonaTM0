@@ -10,14 +10,22 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.0.1: nunca más un «Cargando…» eterno — todas las peticiones tienen
+// tiempo límite, la obra queda en caché 15 minutos (con botón
+// «Actualizar»), el detalle muestra error con «Reintentar» si falla y
+// la pantalla de pestañas también captura errores de red.
+//
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
 
 const BASE = "https://zonatmo.org";
 
 // ---------------------------------------------------------------- red
 
+// Todas las peticiones llevan timeoutMs: si el sitio no responde (web
+// lenta o colgada), se lanza un error que se muestra con «Reintentar»
+// en vez de quedarse cargando para siempre.
 async function getHtml(path) {
-  const r = await kino.fetch(BASE + path, { headers: { Accept: "text/html", Referer: BASE + "/" } });
+  const r = await kino.fetch(BASE + path, { headers: { Accept: "text/html", Referer: BASE + "/" }, timeoutMs: 20000 });
   if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
     userMessage: "No se pudo conectar con ZonaTM0. Inténtalo de nuevo.",
   });
@@ -32,6 +40,7 @@ async function getLibHtml(page, order, q) {
     "&filter_by=title&order_item=" + (order || "likes_count") +
     "&order_dir=desc&_pg=1&page=" + page;
   const r = await kino.fetch(url, {
+    timeoutMs: 15000,
     headers: {
       Accept: "application/json, text/javascript, */*; q=0.01",
       Referer: BASE + "/biblioteca",
@@ -125,6 +134,8 @@ function natCmp(a, b) {
 // Capítulos: filas li.upload-link con data-chapter-number y uno o más
 // enlaces a /view_uploads/<id> (uno por grupo de traducción).
 // Devuelve [{ url, id, num, title, scan }] deduplicados por URL.
+// Plan B: si el marcado cambia y no hay filas upload-link, se toman los
+// enlaces /view_uploads/ sueltos con el número más cercano.
 function chapterList(html) {
   const map = new Map();
   const rowRe = /<li[^>]*upload-link[^>]*>/g;
@@ -148,6 +159,18 @@ function chapterList(html) {
         url, id: u[1], num: numN || u[1], scan,
         title: "Capítulo " + (numN || u[1]) + (scan ? " · " + scan : ""),
       });
+    }
+  }
+  if (!map.size) {
+    const re = /href="(?:https:\/\/zonatmo\.org)?\/view_uploads\/(\d+)\/?"/g;
+    let u;
+    while ((u = re.exec(html)) !== null) {
+      const url = BASE + "/view_uploads/" + u[1] + "/";
+      if (map.has(url)) continue;
+      const near = html.slice(Math.max(0, u.index - 500), u.index + 500);
+      const numN = (((near.match(/data-chapter-number="([^"]*)"/) ||
+        near.match(/Cap[ií]tulo\s*(\d+(?:\.\d+)?)/i) || [])[1] || "").trim()) || u[1];
+      map.set(url, { url, id: u[1], num: numN, scan: "", title: "Capítulo " + numN });
     }
   }
   const arr = [...map.values()];
@@ -266,14 +289,46 @@ function pageNodes(p, i, ratioGuia) {
 
 // Carga una obra: página de detalle + capítulos. En ZonaTM0 todas las
 // filas de capítulos (también las antiguas) ya están en el HTML.
-async function loadSeries(slug) {
-  if (!/^[a-z0-9][a-z0-9\/_-]*$/i.test(slug) || slug.indexOf("..") >= 0) {
-    throw kino.error("arguments", "slug");
+// Con caché de 15 minutos (force=true la salta): reabrir una obra es
+// inmediato y el botón «Actualizar» trae los capítulos nuevos.
+async function loadSeries(slug, force) {
+  if (!slugValido(slug)) throw kino.error("arguments", "slug");
+  const ck = "serie:" + slug;
+  if (!force) {
+    try {
+      const c = getJson(ck, null);
+      if (c && c.meta && Array.isArray(c.chapters) && c.chapters.length &&
+          Date.now() - (c.ts || 0) < 900000) {
+        return { slug, meta: c.meta, chapters: c.chapters };
+      }
+    } catch (e) { /* caché rota: se recarga */ }
   }
   const html = await getHtml("/library/" + slug + "/");
   const meta = seriesMeta(html, slug);
   const chapters = chapterList(html);
+  if (chapters.length) {
+    try {
+      setJson(ck, { meta, chapters, ts: Date.now() });
+      const ks = kino.storage.keys().filter((k) => k.indexOf("serie:") === 0);
+      if (ks.length > 10) for (const k of ks.slice(0, ks.length - 10)) kino.storage.remove(k);
+    } catch (e) { kino.log("cache", e.message); }
+  }
   return { slug, meta, chapters };
+}
+
+// Carga la obra para el detalle: si falla (web caída, sin red, tiempo
+// límite), deja la obra en estado de error — con botón «Reintentar» —
+// en vez de un cargado eterno.
+async function cargarDetalle(state, slug, force) {
+  const prev = (state.detail && state.detail.slug === slug) ? state.detail : null;
+  const meta0 = (prev && prev.meta) || {};
+  try {
+    const d = await loadSeries(slug, force);
+    return { state: { detail: d } };
+  } catch (e) {
+    kino.log("detalle", e.message);
+    return { state: { detail: { slug, error: true, meta: meta0, chapters: [] } } };
+  }
 }
 
 // ------------------------------------------------- medir páginas
@@ -635,14 +690,35 @@ function loadingTree(msg) {
   ] };
 }
 
+// Pantalla de error con reintentar: para fallos de red con tiempo límite
+function errorTree(msg, retryEvent, extra) {
+  const children = [
+    { type: "Icon", name: "error", color: "muted" },
+    { type: "Text", text: msg, textEn: msg, color: "muted", padding: { left: 16, right: 16 } },
+    { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
+      onPressed: { event: retryEvent || "retry" } },
+  ];
+  if (extra) children.push(extra);
+  return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children };
+}
+
 async function detailTree(state) {
   const d = state.detail;
   if (!d) return loadingTree();
   const fav = isFav(d.slug);
+  // la carga falló (web caída, sin red, tiempo límite agotado): se
+  // ofrece reintentar en vez del cargado eterno de antes
+  if (d.error) {
+    return errorTree("No se pudo cargar la obra. Comprueba tu conexión e inténtalo de nuevo.", "reloadSeries",
+      { type: "ElevatedButton", icon: "arrow_back", labelText: "Volver", labelTextEn: "Back",
+        onPressed: { event: "popBack" } });
+  }
   if (!Array.isArray(d.chapters) || !d.chapters.length) {
     return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
       { type: "Icon", name: "error", color: "muted" },
       { type: "Text", text: "No se encontraron capítulos para esta obra.", textEn: "No chapters found for this work.", color: "muted" },
+      { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
+        onPressed: { event: "reloadSeries" } },
       { type: "ElevatedButton", icon: "arrow_back", labelText: "Volver", labelTextEn: "Back",
         onPressed: { event: "popBack" } },
     ] };
@@ -685,6 +761,10 @@ async function detailTree(state) {
               labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
               labelTextEn: fav ? "Remove favourite" : "Add favourite",
               onPressed: "fav" },
+            // Actualizar: salta el caché y trae los capítulos nuevos
+            { type: "ElevatedButton", key: "refresh", icon: "refresh",
+              labelText: "Actualizar", labelTextEn: "Refresh",
+              onPressed: "reloadSeries" },
           ],
         },
       ].filter(Boolean) },
@@ -861,16 +941,26 @@ export async function screen({ state, route }) {
     if (r.name === "read") return await readerTree(state);
     if (r.name === "search") return searchTree(state);
   } catch (e) {
+    return errorTree("No se pudo cargar (" + (e.code || "error") + ").", "retry");
+  }
+  // ruta raíz: pestañas — también con error y Reintentar si la web no
+  // responde (antes esto dejaba la pantalla cargando para siempre)
+  let body;
+  try {
+    body = await tabBody(state);
+  } catch (e) {
     return {
-      type: "Column", padding: 16, gap: 8, children: [
-        { type: "Icon", name: "error", color: "muted" },
-        { type: "Text", text: "No se pudo cargar (" + (e.code || "error") + ").", textEn: "Could not load (" + (e.code || "error") + ").", color: "muted" },
-        { type: "ElevatedButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry", onPressed: { event: "retry" } },
-      ],
+      type: "Scaffold",
+      appBar: {
+        title: "ZonaTM0",
+        actions: [
+          { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
+        ],
+        bottom: { type: "TabBar", key: "tabs", tabs: TABS, value: state.tab || "inicio", onChanged: { event: "tab" } },
+      },
+      body: errorTree("No se pudo conectar con ZonaTM0. Comprueba tu conexión e inténtalo de nuevo.", "retry"),
     };
   }
-  // ruta raíz: pestañas
-  const body = await tabBody(state);
   return {
     type: "Scaffold",
     appBar: {
@@ -897,9 +987,8 @@ export async function screenEvent(ev) {
       if (r.name === "detail") {
         const slug = routeSlug(r);
         if (slug && slugValido(slug) && (!state.detail || state.detail.slug !== slug)) {
-          const d = await loadSeries(slug);
-          if (!d.chapters.length) return { toast: "No se encontraron capítulos." };
-          return { state: { detail: d } };
+          // carga con caché y, si falla, estado de error (no spinner eterno)
+          return await cargarDetalle(state, slug, false);
         }
       }
       return null;
@@ -930,6 +1019,12 @@ export async function screenEvent(ev) {
         toast: results.length ? results.length + " resultados" : "Sin resultados" };
     }
     if (name === "retry") return { state: { _r: Date.now() } };
+    // Reintentar / Actualizar en el detalle: salta el caché y recarga
+    if (name === "reloadSeries") {
+      const d = state.detail;
+      if (!d) return null;
+      return await cargarDetalle(state, d.slug, true);
+    }
     if (name === "fav") {
       const d = state.detail;
       if (!d) return null;
@@ -1011,7 +1106,9 @@ export async function screenEvent(ev) {
     if (name === "openSeries") {
       const slug = String(ev.arg || "");
       if (!slugValido(slug)) return null;
-      const d = await loadSeries(slug);
+      const resp = await cargarDetalle(state, slug, false);
+      const d = resp.state.detail;
+      if (d.error) return { toast: "No se pudo cargar la obra. Inténtalo de nuevo." };
       if (!d.chapters.length) return { toast: "No se encontraron capítulos." };
       return { state: { detail: d },
                route: { push: "detail", params: { slug } } };
