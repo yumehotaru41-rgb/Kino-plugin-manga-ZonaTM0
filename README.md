@@ -6,7 +6,7 @@ Plugin de Kino para leer obras de zonatmo.org (ZonaTM0).
 *   **Inicio**: últimas obras, **Seguir leyendo** (lo que empezaste, automáticamente) y favoritos; **Biblioteca** (las más populares, paginada), **Favoritos**, **Historial** y **buscador** por título.
 *   **Tarjetas propias de lectura** con el título en dos filas; **navegación real** (Atrás retrocede lector → detalle → pestañas).
 *   **Detalle de obra**: portada, estado, autor, géneros, sinopsis y capítulos (con su grupo de traducción); botones **«Continuar»** y **«Actualizar»**.
-*   **Lector webcómic**: páginas verticales enteras a ancho de pantalla, sin recortes; tira vertical o **modo página a página** (Kino 0.9.81+), con **zoom por pellizco**, **«Ir a capítulo»** y **«Pantalla completa»** que oculta las barras (se recuerda).
+*   **Lector webcómic**: páginas verticales enteras a ancho de pantalla, sin recortes; tira vertical o **modo página a página** (Kino 0.9.81+), con **zoom por pellizco** y **«Pantalla completa»** que oculta las barras (se recuerda). Panel inferior en tarjeta: **Anterior/Siguiente** grandes y fila secundaria compacta (modo · pantalla completa · cap. X de N).
 *   **Ícono del plugin**: icon.png 96×96 declarado en el manifiesto (`icon` + `screen.iconFile`).
 *   **Sincronización entre aparatos** (`shared`): favoritos y progreso entre teléfono y TV vinculados.
 
@@ -14,13 +14,19 @@ Las novelas de texto del catálogo se omiten (no tienen páginas que leer).
 
 ## Instalación
 
-Requiere **Kino 0.9.74+** (apiVersion 14). Añade `yumehotaru41-rgb/Kino-plugin-manga-ZonaTM0` en Ajustes ▸ Plugins ▸ + y actualiza a la versión **1.1.2**.
+Requiere **Kino 0.9.74+** (apiVersion 14). Añade `yumehotaru41-rgb/Kino-plugin-manga-ZonaTM0` en Ajustes ▸ Plugins ▸ + y actualiza a la versión **1.1.3**.
+
+## Cambios en 1.1.3 — panel inferior del lector rediseñado
+
+*   **Eliminado el desplegable «Ir a capítulo»** (desordenaba el panel y desbordaba en obras largas).
+*   El panel inferior ahora es **una tarjeta compacta**:
+    *   Fila principal: **«Anterior»** y **«Siguiente»** grandes, a partes iguales («Anterior» se apaga en el primer capítulo; «Siguiente» dice «Último capítulo» al final).
+    *   Divisor y fila secundaria: **modo tira/páginas**, **pantalla completa** y el contador **«Capítulo X de N»**.
 
 ## Cambios en 1.1.2 — lector que se quedaba «Cargando…» en obras largas
 
 *   **Corregido**: en obras con muchos capítulos (>150 aprox., p. ej. *Watashi ga Motenai no wa Dou Kangaetemo Omaera ga Warui!*), la lista de capítulos se veía bien pero al abrir uno el lector se quedaba «Cargando…» para siempre. La causa: el estado de una pantalla de Kino tiene un **límite de tamaño**, y al abrir un capítulo se guardaban ahí los capítulos **dos veces** (detalle + lector) más las imágenes; en cuanto la obra era larga, Kino descartaba el parche de estado y el lector se quedaba colgado.
 *   Siguiendo el patrón de MangaTrack, **lo pesado (capítulos, imágenes) vive ahora en `kino.storage`** y el estado de la pantalla viaja mínimo (solo índices): por larga que sea la obra, nunca se vuelve a pasar del límite.
-*   El menú **«Ir a capítulo»** ahora solo ofrece los capítulos cercanos al actual (en obras de cientos de capítulos, tantas opciones desbordaban el límite de nodos por pantalla).
 
 ## Cambios en 1.1.1
 

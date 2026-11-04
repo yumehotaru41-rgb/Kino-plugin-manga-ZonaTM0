@@ -10,6 +10,12 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.3 — panel inferior del lector rediseñado:
+//   - Eliminado el desplegable «Ir a capítulo» (desordenaba el panel).
+//   - Ahora es una tarjeta compacta: «Anterior» y «Siguiente» grandes
+//     y a partes iguales, separados por un divisor de una fila
+//     secundaria (modo de lectura · pantalla completa · cap. X de N).
+//
 // v1.1.2 — corregido el lector que se quedaba «Cargando…» para siempre
 // en obras con muchos capítulos (>150 aprox., p. ej. Watashi ga
 // Motenai...). Causa: el estado de una pantalla de Kino tiene un límite
@@ -891,6 +897,45 @@ function paginaFit(p, i) {
       fill: true, fit: "width", aspect: "2:3" } ] };
 }
 
+// v1.1.3: panel inferior del lector — una tarjeta compacta en vez de
+// la fila de botones desordenada (y sin el desplegable «Ir a
+// capítulo»): arriba «Anterior»/«Siguiente» grandes a partes iguales,
+// y debajo, tras un divisor, la fila secundaria (modo · pantalla
+// completa · cap. X de N). En el primer capítulo «Anterior» se apaga y
+// en el último «Siguiente» dice «Último capítulo».
+function panelInferior(r, chapters, hasNext, hasPrev, modo, inm) {
+  const secundaria = [];
+  if (pagesDisponible()) {
+    secundaria.push({ type: "TextButton", key: "btnModo",
+      labelText: modo === "paginas" ? "Modo tira" : "Modo páginas",
+      labelTextEn: modo === "paginas" ? "Strip mode" : "Page mode",
+      onPressed: "modoLector" });
+  }
+  secundaria.push({ type: "TextButton", key: "btnPantalla", icon: "visibility",
+    labelText: "Pantalla completa", labelTextEn: "Fullscreen",
+    onPressed: "lectorInm" });
+  return {
+    type: "Card", key: "panelLectura", margin: 8, padding: 12, gap: 8,
+    children: [
+      { type: "Row", gap: 12, children: [
+        { type: "ElevatedButton", key: "btnPrev", icon: "arrow_back",
+          labelText: "Anterior", labelTextEn: "Previous",
+          onPressed: "prevChap", enabled: hasPrev, fill: true },
+        { type: "ElevatedButton", key: "btnNext", icon: "arrow_forward",
+          labelText: hasNext ? "Siguiente" : "Último capítulo",
+          labelTextEn: hasNext ? "Next" : "Last chapter",
+          onPressed: "nextChap", enabled: hasNext, fill: true },
+      ] },
+      { type: "Divider", key: "sepPanel" },
+      { type: "Row", gap: 8, mainAxisAlignment: "center", wrap: true, children: secundaria },
+      { type: "Text", key: "lblPos",
+        text: "Capítulo " + (r.idx + 1) + " de " + chapters.length,
+        textEn: "Chapter " + (r.idx + 1) + " of " + chapters.length,
+        style: "caption", color: "muted", padding: 4 },
+    ],
+  };
+}
+
 async function readerTree(state) {
   const r = state.reader;
   if (!r) return loadingTree();
@@ -928,32 +973,7 @@ async function readerTree(state) {
       }],
     });
   }
-  // v1.1.2: el menú «Ir a capítulo» solo ofrece los capítulos cercanos
-  // al actual (en obras largas, 490 opciones romperían el límite de
-  // nodos por pantalla).
-  const desde = Math.max(0, Math.min(r.idx - 25, Math.max(0, chapters.length - 60)));
-  const opciones = chapters.slice(desde, desde + 60)
-    .map((c, k) => ({ value: String(desde + k), label: c.title }));
-  if (!inm) body.push({
-    type: "Row", gap: 12, padding: 16, mainAxisAlignment: "center", wrap: true, children: [
-      { type: "ElevatedButton", icon: "arrow_back", labelText: "Anterior", labelTextEn: "Previous",
-        onPressed: "prevChap", enabled: hasPrev },
-      { type: "DropdownButton", key: "jumpChap", labelText: "Ir a capítulo", labelTextEn: "Go to chapter",
-        value: String(r.idx), onChanged: "jumpChap", options: opciones },
-      { type: "ElevatedButton", labelText: hasNext ? "Siguiente" : "Último capítulo",
-        labelTextEn: hasNext ? "Next" : "Last chapter",
-        icon: "arrow_forward", onPressed: "nextChap", enabled: hasNext },
-    ].concat(pagesDisponible() ? [
-      { type: "TextButton", key: "btnModo", labelText: modo === "paginas" ? "Modo tira" : "Modo páginas",
-        labelTextEn: modo === "paginas" ? "Strip mode" : "Page mode", onPressed: "modoLector" },
-    ] : []).concat([
-      { type: "TextButton", key: "btnPantalla", icon: "visibility",
-        labelText: "Pantalla completa", labelTextEn: "Fullscreen", onPressed: "lectorInm" },
-      { type: "Text",
-        text: "cap. " + (r.idx + 1) + " de " + chapters.length + " · pellizca para acercar",
-        textEn: "ch. " + (r.idx + 1) + " of " + chapters.length, style: "caption", color: "muted" },
-    ]),
-  });
+  if (!inm) body.push(panelInferior(r, chapters, hasNext, hasPrev, modo, inm));
   const raiz = {
     type: "Scaffold",
     appBar: inm ? undefined : { type: "AppBar", mergeWithKinoBar: true, dense: true, key: "barReader",
@@ -1180,10 +1200,11 @@ export async function screenEvent(ev) {
       syncPush("favs", f);
       return { toast: added ? "Añadida a favoritos" : "Quitada de favoritos" };
     }
-    if (name === "read" || name === "nextChap" || name === "prevChap" || name === "jumpChap") {
+    if (name === "read" || name === "nextChap" || name === "prevChap") {
       // v1.1.2: la lista de capítulos ya no viaja en el estado (era lo
       // que desbordaba el límite en obras largas y dejaba el lector
       // «Cargando…» para siempre); se lee de kino.storage.
+      // v1.1.3: sin «Ir a capítulo» — solo Anterior/Siguiente.
       let chapters, idx, slug, title, poster;
       if (name === "read") {
         const d = state.detail;
@@ -1196,9 +1217,7 @@ export async function screenEvent(ev) {
         const r = state.reader;
         if (!r) return null;
         chapters = chaptersDe(r.slug) || [];
-        idx = name === "jumpChap"
-          ? parseInt(String(ev.value || "0"), 10) || 0
-          : r.idx + (name === "nextChap" ? 1 : -1);
+        idx = r.idx + (name === "nextChap" ? 1 : -1);
         slug = r.slug; title = r.title; poster = r.poster;
         if (idx < 0 || idx >= chapters.length) return null;
       }
