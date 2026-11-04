@@ -13,6 +13,6 @@
     "label": "ZonaTM0",
     "iconFile": "icon.png",
     "menuOpens": "screen",
-    "opensFrom": ["menu", "search"]
+    "opensFrom": ["menu", "settings"]
   }
 }
