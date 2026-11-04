@@ -10,6 +10,18 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.5 — a petición del usuario:
+//   - Detalle: «Continuar» con texto corto («Continuar · Cap. N», ya
+//     no se corta); Favoritos/Actualizar/Olvidar pasan a ser SOLO
+//     iconos, sin texto, para una fila compacta.
+//   - Lector: además del panel inferior, al FINAL de la tira aparece
+//     una tarjeta «Anterior / Siguiente» — el botón para pasar de
+//     capítulo siempre está al alcance al terminar de leer.
+//   - Quitado «fill» de los botones dentro de filas: no es una
+//     propiedad válida en botones y Kino descartaba el nodo entero
+//     (por eso «Siguiente» desaparecía). Ahora solo «flex», que sí
+//     admite un hijo de Row.
+//
 // v1.1.4 — a petición del usuario:
 //   - «Anterior» y «Siguiente» SIEMPRE visibles y activos en el lector
 //     (antes, al llegar al último capítulo, «Siguiente» quedaba
@@ -832,31 +844,34 @@ async function detailTree(state) {
   //    último
   //  - fila secundaria compacta: Favoritos · Actualizar · Olvidar lo
   //    leído (solo si hay progreso)
+  // v1.1.5: textos cortos que no se cortan — «Continuar · Cap. N»
   const filaPrincipal = (function () {
     if (pgIdx > 0) {
-      const contLabel = ("Continuar: " + (pg.chTitle || chapters[pgIdx].title)).slice(0, 60);
+      const contLabel = "Continuar · Cap. " + (chapters[pgIdx].num || (pgIdx + 1));
       return { type: "ElevatedButton", key: "cont", icon: "play",
-        labelText: contLabel, labelTextEn: contLabel, fill: true, flex: 1,
+        labelText: contLabel, labelTextEn: contLabel, flex: 1,
         onPressed: { event: "read", arg: String(pgIdx) } };
     }
     return { type: "ElevatedButton", key: "start", icon: "play",
       labelText: "Empezar a leer", labelTextEn: "Start reading",
-      fill: true, flex: 1, onPressed: { event: "read", arg: "0" } };
+      flex: 1, onPressed: { event: "read", arg: "0" } };
   })();
+  // v1.1.5: fila secundaria SOLO con iconos (sin texto): el labelText
+  // queda como etiqueta accesible/mando de TV, no se dibuja.
   const filaSecundaria = [
-    { type: "ElevatedButton", key: "fav", icon: fav ? "heart" : "star",
+    { type: "IconButton", key: "fav", icon: fav ? "heart" : "star",
       labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
       labelTextEn: fav ? "Remove favourite" : "Add favourite",
-      fill: true, flex: 1, onPressed: "fav" },
+      onPressed: "fav" },
     // Actualizar: salta el caché y trae los capítulos nuevos
-    { type: "ElevatedButton", key: "refresh", icon: "refresh",
+    { type: "IconButton", key: "refresh", icon: "refresh",
       labelText: "Actualizar", labelTextEn: "Refresh",
-      fill: true, flex: 1, onPressed: "reloadSeries" },
+      onPressed: "reloadSeries" },
   ];
   if (pg) {
-    filaSecundaria.push({ type: "ElevatedButton", key: "olvidar", icon: "delete",
+    filaSecundaria.push({ type: "IconButton", key: "olvidar", icon: "delete",
       labelText: "Olvidar lo leído", labelTextEn: "Forget read progress",
-      fill: true, flex: 1, onPressed: { event: "borrarProg", arg: d.slug } });
+      onPressed: { event: "borrarProg", arg: d.slug } });
   }
   const head = {
     type: "Row", gap: 16, padding: 16, crossAxisAlignment: "start", stackOnNarrow: true,
@@ -875,10 +890,11 @@ async function detailTree(state) {
           filaPrincipal,
           { type: "ElevatedButton", key: "latest", icon: "expand_more",
             labelText: "Leer lo último", labelTextEn: "Read latest",
-            fill: true, flex: 1, onPressed: { event: "read", arg: String(chapters.length - 1) } },
+            flex: 1, onPressed: { event: "read", arg: String(chapters.length - 1) } },
         ] },
         // v1.1.4: fila secundaria — gestión, sin huecos
-        { type: "Row", key: "filaGestion", gap: 8, children: filaSecundaria },
+        { type: "Row", key: "filaGestion", gap: 8,
+          mainAxisAlignment: "center", children: filaSecundaria },
       ].filter(Boolean) },
     ],
   };
@@ -959,10 +975,10 @@ function panelInferior(r, chapters, modo) {
       { type: "Row", gap: 12, children: [
         { type: "ElevatedButton", key: "btnPrev", icon: "arrow_back",
           labelText: "Anterior", labelTextEn: "Previous",
-          onPressed: "prevChap", fill: true },
+          onPressed: "prevChap", flex: 1 },
         { type: "ElevatedButton", key: "btnNext", icon: "arrow_forward",
           labelText: "Siguiente", labelTextEn: "Next",
-          onPressed: "nextChap", fill: true },
+          onPressed: "nextChap", flex: 1 },
       ] },
       { type: "Divider", key: "sepPanel" },
       { type: "Row", gap: 8, mainAxisAlignment: "center", wrap: true, children: secundaria },
@@ -970,6 +986,30 @@ function panelInferior(r, chapters, modo) {
         text: "Capítulo " + (r.idx + 1) + " de " + chapters.length,
         textEn: "Chapter " + (r.idx + 1) + " of " + chapters.length,
         style: "caption", color: "muted", padding: 4 },
+    ],
+  };
+}
+
+// v1.1.5: tarjeta al final de la tira — «Anterior» y «Siguiente»
+// también aquí (siempre activos; en los extremos, el evento avisa con
+// un toast). Así el botón para pasar de capítulo está a la vista justo
+// cuando terminas de leer.
+function finCapituloNode(r, chapters) {
+  return {
+    type: "Card", key: "finCap", margin: 16, padding: 12, gap: 8,
+    children: [
+      { type: "Text", key: "finTitulo",
+        text: "Capítulo " + (r.idx + 1) + " de " + chapters.length,
+        textEn: "Chapter " + (r.idx + 1) + " of " + chapters.length,
+        style: "caption", color: "muted" },
+      { type: "Row", gap: 12, children: [
+        { type: "ElevatedButton", key: "finPrev", icon: "arrow_back",
+          labelText: "Anterior", labelTextEn: "Previous",
+          onPressed: "prevChap", flex: 1 },
+        { type: "ElevatedButton", key: "finNext", icon: "arrow_forward",
+          labelText: "Siguiente", labelTextEn: "Next",
+          onPressed: "nextChap", flex: 1 },
+      ] },
     ],
   };
 }
@@ -1005,7 +1045,10 @@ async function readerTree(state) {
       type: "SingleChildScrollView", key: scrollKey, flex: 1, zoom: true,
       children: [{
         type: "Column", gap: 4, crossAxisAlignment: "center", fill: true,
-        children: pages.flatMap((p, i) => pageNodes(p, i)),
+        children: pages.flatMap((p, i) => pageNodes(p, i))
+          // v1.1.5: al final de la tira, una tarjeta para pasar de
+          // capítulo — siempre visible al terminar el capítulo.
+          .concat([finCapituloNode(r, chapters)]),
       }],
     });
   }
