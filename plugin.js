@@ -10,9 +10,22 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.1:
+//   - Corregido: al abrir una obra justo después de otra, el
+//     «Continuar»/detalle de la anterior (p. ej. Dragon Ball) volvía a
+//     aparecer. Un tick del temporizador que aún estaba cargando la
+//     obra anterior devolvía su resultado tarde y sobrescribía el
+//     detalle nuevo. Ahora el resultado se descarta si mientras tanto
+//     se abrió otra obra (guarda por «slug activo») y cada tick
+//     autocorrige el detalle si no coincide con la ruta.
+//   - Añadido: borrar de «Seguir leyendo»/Historial — botón
+//     «Olvidar lo leído» en el detalle, mantén pulsada una entrada del
+//     Historial para quitarla, y «Borrar todo el historial» (con
+//     confirmación en dos toques) en la pestaña Historial.
+//
 // v1.1.0 (patrón de MangaTrack): nada bloquea la pantalla.
 //   - Abrir una obra empuja el detalle AL INSTANTE (con esqueletos) y
-//     las capítulo/metadata llegan en segundo plano mediante el
+//     los capítulos/metadatos llegan en segundo plano mediante el
 //     temporizador «every» de la pantalla (sus ticks no cuentan para
 //     el «No responde» de Kino). Nunca más un «Cargando…» eterno.
 //   - Inicio y Biblioteca también se pintan al instante (caché o
@@ -359,6 +372,22 @@ function markRead(slug, title, poster, chTitle, url) {
   syncPush("prog", p);
 }
 
+// v1.1.1: quita UNA obra de «Seguir leyendo»/Historial
+function borrarProgreso(slug) {
+  const p = progress();
+  if (!p[slug]) return false;
+  delete p[slug];
+  setJson("prog", p);
+  syncPush("prog", p);
+  return true;
+}
+
+// v1.1.1: vacía todo «Seguir leyendo»/Historial
+function borrarTodoProgreso() {
+  setJson("prog", {});
+  syncPush("prog", {});
+}
+
 // ---------------------------------------------- sincronización (kino.shared)
 
 function syncPush(key, val) {
@@ -514,23 +543,40 @@ function titleGridOf(items, eventMore, loading, done, emptyNode) {
   return list;
 }
 
-function historyList() {
+// v1.1.1: Historial con dos formas de borrar el «Seguir leyendo»:
+// mantener pulsada una entrada para quitar solo esa obra, y el botón
+// «Borrar todo» (pide confirmar con un segundo toque).
+function historyList(state) {
   const p = progress();
   const rows = Object.keys(p).map((slug) => ({ slug, p: p[slug] }))
     .sort((a, b) => b.p.ts - a.p.ts).slice(0, 50);
+  const conf = state && state.confBorrar === true;
   if (!rows.length) {
     return { type: "emptyState", icon: "schedule", title: "Todavía no has leído nada.", titleEn: "You have not read anything yet." };
   }
-  return {
-    type: "ListView", key: "hist",
-    items: rows.map((r) => ({
+  const items = [{
+    type: "Row", key: "histHead", gap: 8, padding: 16,
+    children: [
+      { type: "Text", text: "Mantén pulsada una obra para quitarla del historial.",
+        textEn: "Long-press a work to remove it from history.",
+        style: "caption", color: "muted", flex: 1 },
+      { type: "ElevatedButton", key: "clearHist", icon: "delete",
+        labelText: conf ? "¿Seguro? Toca otra vez" : "Borrar todo",
+        labelTextEn: conf ? "Sure? Tap again" : "Clear all",
+        onPressed: { event: "clearHist" } },
+    ],
+  }];
+  for (const r of rows) {
+    items.push({
       type: "ListTile", key: "h-" + r.slug.replace(/[^a-z0-9]/gi, "-"),
       title: r.p.title || r.slug,
       subtitle: r.p.chTitle || "", subtitleEn: r.p.chTitle || "",
       leading: { type: "CircleAvatar", image: r.p.poster, icon: "list" },
       onTap: { event: "openSeries", arg: r.slug },
-    })),
-  };
+      onLongPress: { event: "borrarProg", arg: r.slug },
+    });
+  }
+  return { type: "ListView", key: "hist", items };
 }
 
 // v1.1.0: el cuerpo de las pestañas ya NUNCA espera a la red. Pinta lo
@@ -539,7 +585,7 @@ function historyList() {
 function tabBody(state) {
   const tab = state.tab || "inicio";
   if (tab === "favoritos") return titleGridOf(favs(), null, false, true, EMPTY_FAV);
-  if (tab === "historial") return historyList();
+  if (tab === "historial") return historyList(state);
   if (tab === "biblioteca") {
     const items = Array.isArray(state.libItems) ? state.libItems : null;
     if (!items) return skelGridNode(12);
@@ -702,6 +748,8 @@ async function detailTree(state) {
         aspect: "2:3", alt: d.meta.title,
         fallback: { type: "Icon", name: "list" } }
     : { type: "Icon", name: "list" };
+  const pg = progress()[d.slug];
+  const pgIdx = pg && typeof pg.url === "string" ? d.chapters.findIndex((c) => c.url === pg.url) : -1;
   const head = {
     type: "Row", gap: 16, padding: 16, crossAxisAlignment: "start", stackOnNarrow: true,
     children: [
@@ -716,13 +764,11 @@ async function detailTree(state) {
         {
           type: "Row", gap: 8, wrap: true, children: [
             (function () {
-              const pg = progress()[d.slug];
-              const ci = pg && typeof pg.url === "string" ? d.chapters.findIndex((c) => c.url === pg.url) : -1;
-              if (ci > 0) {
-                const contLabel = ("Continuar: " + (pg.chTitle || d.chapters[ci].title)).slice(0, 60);
+              if (pgIdx > 0) {
+                const contLabel = ("Continuar: " + (pg.chTitle || d.chapters[pgIdx].title)).slice(0, 60);
                 return { type: "ElevatedButton", key: "cont", icon: "play",
                   labelText: contLabel, labelTextEn: contLabel,
-                  onPressed: { event: "read", arg: String(ci) } };
+                  onPressed: { event: "read", arg: String(pgIdx) } };
               }
               return { type: "ElevatedButton", key: "start", icon: "play",
                 labelText: "Empezar a leer", labelTextEn: "Start reading",
@@ -741,6 +787,10 @@ async function detailTree(state) {
               onPressed: "reloadSeries" },
           ],
         },
+        // v1.1.1: sacar esta obra de «Seguir leyendo»/Historial
+        (pg ? { type: "TextButton", key: "olvidar", icon: "delete",
+          labelText: "Olvidar lo leído", labelTextEn: "Forget read progress",
+          onPressed: { event: "borrarProg", arg: d.slug } } : null),
       ].filter(Boolean) },
     ],
   };
@@ -910,7 +960,11 @@ export async function screen({ state, route }) {
   try {
     if (r.name === "detail") {
       const slug = routeSlug(r);
-      if (!state.detail || state.detail.slug !== slug) return loadingTree();
+      if (!state.detail || state.detail.slug !== slug) {
+        // v1.1.1: el detalle del estado no es el de esta ruta; se pinta
+        // la vista de esqueletos y el temporizador corrige el estado.
+        return detailLoadingTree(detailLoadingDe(slug));
+      }
       return await detailTree(state);
     }
     if (r.name === "read") return await readerTree(state);
@@ -941,8 +995,15 @@ export async function screen({ state, route }) {
 // se pisen (temporizador + botón «Cargar ahora»).
 let serieEnCarga = null;
 
+// v1.1.1: la obra que se está viendo AHORA. Un tick del temporizador
+// que termine de cargar una obra anterior ya no debe sobrescribir el
+// detalle (el bug de «me vuelve a aparecer Dragon Ball»): se compara
+// contra esta variable al terminar la carga.
+let slugDetalleActivo = null;
+
 function detailLoadingDe(slug) {
   const info = CARDINFO[slug] || {};
+  slugDetalleActivo = slug;
   return { slug, loading: true,
     meta: { title: info.title || "", poster: info.poster || "" },
     chapters: [] };
@@ -990,12 +1051,25 @@ export async function screenEvent(ev) {
     // temporizador del detalle: carga la obra en segundo plano
     if (name === "cargarSerie" || name === "cargarSerieAhora") {
       const d = state.detail;
-      if (!d || !d.loading) return null;
+      if (!d) return null;
+      // v1.1.1: autocuración — si el detalle del estado no es el que se
+      // está viendo (quedó el de la obra anterior), se corrige aquí y el
+      // siguiente tick la carga.
+      if (slugDetalleActivo && d.slug !== slugDetalleActivo) {
+        return { state: { detail: detailLoadingDe(slugDetalleActivo) } };
+      }
+      if (!d.loading) return null;
       if (serieEnCarga === d.slug && name === "cargarSerie") return null;
       serieEnCarga = d.slug;
+      slugDetalleActivo = d.slug;
       try {
         // refresh=true salta el caché (botón «Actualizar»/«Reintentar»)
-        return await cargarDetalle(state, d.slug, d.refresh === true);
+        const res = await cargarDetalle(state, d.slug, d.refresh === true);
+        // v1.1.1: mientras cargaba esta obra se abrió otra — el
+        // resultado ya no vale y NO se aplica (no vuelve a «aparecer»
+        // el de antes).
+        if (slugDetalleActivo !== d.slug) return null;
+        return res;
       } finally {
         serieEnCarga = null;
       }
@@ -1018,6 +1092,27 @@ export async function screenEvent(ev) {
         toast: results.length ? results.length + " resultados" : "Sin resultados" };
     }
     if (name === "retry") return { state: { _r: Date.now() } };
+    // v1.1.1: quitar UNA obra de «Seguir leyendo»/Historial (botón
+    // «Olvidar lo leído» del detalle o pulsación larga en Historial)
+    if (name === "borrarProg") {
+      let slug = String(ev.arg || "");
+      if (!slug && state.detail) slug = state.detail.slug;
+      if (!slugValido(slug)) return null;
+      if (!borrarProgreso(slug)) return null;
+      return { state: { _r: Date.now() },
+        toast: "Quitada de «Seguir leyendo»" };
+    }
+    // v1.1.1: vaciar TODO «Seguir leyendo»/Historial (dos toques para
+    // confirmar; el primero solo cambia el texto del botón)
+    if (name === "clearHist") {
+      if (!state.confBorrar) {
+        return { state: { confBorrar: true },
+          toast: "Toca otra vez para borrar TODO el historial" };
+      }
+      borrarTodoProgreso();
+      return { state: { confBorrar: false },
+        toast: "Historial y «Seguir leyendo» borrados" };
+    }
     // Reintentar / Actualizar en el detalle: vuelve a la vista de
     // esqueletos (sin bloquear) y el temporizador recarga saltando el
     // caché (refresh=true).
