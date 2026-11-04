@@ -10,6 +10,16 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.2.0 — a petición del usuario:
+//   - Inicio reorganizado por categorías: fuera «Últimas obras»,
+//     «Manga más populares» y «Los más leídos»; ahora hay secciones
+//     por género (Acción, Comedia, Isekai, Fantasía, Romance, Drama),
+//     ordenadas por popularidad del sitio (genders[] de /biblioteca).
+//   - Sin repetidos: cada obra aparece solo en la PRIMERA sección que
+//     la contiene.
+//   - Al final de cada sección, botón «Ver más» que añade otra página
+//     de ese género.
+//
 // v1.1.9 — a petición del usuario:
 //   - Inicio: debajo de «Mis favoritos», dos filas nuevas —
 //     «Manga más populares» (por «me gusta») y «Los más leídos»
@@ -125,10 +135,13 @@ async function getHtml(path, timeoutMs) {
 // Biblioteca por AJAX: la rejilla de obras no viene en la página sino en
 // un fragmento HTML devuelto como JSON por /biblioteca (con cabeceras
 // de XMLHttpRequest). order: "created_at" (últimas) o "likes_count".
-async function getLibHtml(page, order, q) {
+// v1.2.0: gender (id de género del sitio) filtra por género con
+// &genders[]=<id> (mismo formato que usa el filtro de la web).
+async function getLibHtml(page, order, q, gender) {
   const url = BASE + "/biblioteca?title=" + encodeURIComponent(q || "") +
     "&filter_by=title&order_item=" + (order || "likes_count") +
-    "&order_dir=desc&_pg=1&page=" + page;
+    "&order_dir=desc&_pg=1&page=" + page +
+    (gender ? "&genders%5B%5D=" + encodeURIComponent(gender) : "");
   const r = await kino.fetch(url, {
     timeoutMs: 25000,
     headers: {
@@ -671,6 +684,91 @@ function historyList(state) {
   return { type: "ListView", key: "hist", items };
 }
 
+// ------------------------------------------------- géneros (v1.2.0)
+
+// Normaliza un nombre de género: minúsculas, sin acentos ni símbolos
+// («Acción» → «accion») para casar las etiquetas del sitio.
+function normaliza(s) {
+  return String(s || "").toLowerCase().normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "").trim();
+}
+
+// Ids de los géneros del sitio: la página /biblioteca trae un
+// <input name="genders[]" value="<id>" id="X"> por género, con su
+// <label for="X">Nombre</label>. Se cachea un día en kino.storage.
+async function getGenders() {
+  const c = getJson("genders", null);
+  if (c && c.map && Date.now() - (c.ts || 0) < 86400000) return c.map;
+  const html = await getHtml("/biblioteca", 30000);
+  const out = {};
+  const re = /<input[^>]*name="genders\[\]"[^>]*>/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const tag = m[0];
+    const id = (tag.match(/\bvalue="([^"]*)"/) || [])[1] || "";
+    const eid = (tag.match(/\bid="([^"]*)"/) || [])[1] || "";
+    if (!id || !eid) continue;
+    const lbl = html.match(new RegExp('<label[^>]*for="' + eid + '"[^>]*>([^<]{1,60})<'));
+    const norm = normaliza(lbl ? lbl[1] : "");
+    if (norm) out[norm] = id;
+  }
+  setJson("genders", { map: out, ts: Date.now() });
+  return out;
+}
+
+// Las secciones del Inicio: géneros populares del sitio.
+const GENEROS_INICIO = [
+  { key: "accion", label: "Acción", labelEn: "Action" },
+  { key: "comedia", label: "Comedia", labelEn: "Comedy" },
+  { key: "isekai", label: "Isekai", labelEn: "Isekai" },
+  { key: "fantasia", label: "Fantasía", labelEn: "Fantasy" },
+  { key: "romance", label: "Romance", labelEn: "Romance" },
+  { key: "drama", label: "Drama", labelEn: "Drama" },
+];
+
+// Tope de obras por sección en el estado (que viaja en la pantalla):
+// 24 al abrir + hasta 24 más con «Ver más».
+const GENERO_MAX = 48;
+
+// Una sección por género: tarjetas + «Ver más» al final. «usados» es
+// el mapa compartido entre secciones: una obra que ya salió en una
+// sección anterior NO se repite (a petición del usuario).
+function railGenero(state, g, usados) {
+  const cats = state.cats || {};
+  const cat = cats[g.key] || null;
+  if (!cat) {
+    // aún sin cargar: esqueletos de la sección mientras llega el tick
+    const sk = [];
+    for (let i = 0; i < 6; i++) sk.push({
+      type: "Card", key: g.key + "sk" + i, flush: true, children: [
+        { type: "Skeleton", shape: "block", width: 120, height: 180 }] });
+    return [
+      { type: "Text", text: g.label, textEn: g.labelEn, style: "h3", padding: 16 },
+      { type: "SingleChildScrollView", key: g.key + "skr", direction: "horizontal", padding: 16,
+        children: [{ type: "Row", gap: 8, children: sk }] },
+    ];
+  }
+  const items = Array.isArray(cat.items) ? cat.items : [];
+  const cards = [];
+  for (const it of items.slice(0, 60)) {
+    if (usados[it.slug]) continue;
+    usados[it.slug] = true;
+    cards.push(posterCard(it, "g" + g.key + "-", true));
+  }
+  if (!cards.length) return [];
+  if (items.length < GENERO_MAX) {
+    // v1.2.0: botón «Ver más» al final de la sección
+    cards.push({ type: "ElevatedButton", key: "vm-" + g.key, icon: "add",
+      labelText: "Ver más", labelTextEn: "See more",
+      onPressed: { event: "verMas", arg: g.key } });
+  }
+  return [
+    { type: "Text", text: g.label, textEn: g.labelEn, style: "h3", padding: 16 },
+    { type: "SingleChildScrollView", key: "r-" + g.key, direction: "horizontal", padding: 16,
+      children: [{ type: "Row", gap: 8, children: cards }] },
+  ];
+}
+
 // v1.1.0: el cuerpo de las pestañas ya NUNCA espera a la red. Pinta lo
 // que haya en el estado y, si falta, esqueletos: el temporizador
 // «cargarRoot» trae los datos en segundo plano.
@@ -684,7 +782,6 @@ function tabBody(state) {
     return titleGridOf(items, "libMore", state.libLoading === true, state.libDone === true);
   }
   // inicio
-  const items = Array.isArray(state.inicioItems) ? state.inicioItems : null;
   const rail = (title, titleEn, key, list) => list.length ? [
     { type: "Text", text: title, textEn: titleEn, style: "h3", padding: 16 },
     { type: "SingleChildScrollView", key: key, direction: "horizontal", padding: 16,
@@ -696,32 +793,10 @@ function tabBody(state) {
     .filter((x) => x.title)
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 20);
-  if (!items) {
-    // esqueletos de «Últimas obras» mientras carga el temporizador
-    const sk = [];
-    for (let i = 0; i < 8; i++) sk.push({
-      type: "Card", key: "skl" + i, flush: true, children: [
-        { type: "Skeleton", shape: "block", width: 120, height: 180 }] });
-    return {
-      type: "SingleChildScrollView", key: "homeSkel", flex: 1,
-      children: [{ type: "Column", children: [
-        { type: "ListTile", key: "searchTile", leading: { type: "Icon", name: "search" },
-          title: "Buscar obra", titleEn: "Search a work",
-          subtitle: "Por título, p. ej. Solo Leveling", subtitleEn: "By title, e.g. Solo Leveling",
-          trailing: { type: "Icon", name: "arrow_forward" },
-          onTap: { event: "goSearch" } },
-        { type: "Text", text: "Últimas obras", textEn: "Latest works", style: "h3", padding: 16 },
-        { type: "SingleChildScrollView", key: "skelRail", direction: "horizontal", padding: 16,
-          children: [{ type: "Row", gap: 8, children: sk }] },
-      ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
-        .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
-        .concat(rail("Manga más populares", "Most popular", "pop",
-          Array.isArray(state.popItems) ? state.popItems : []))
-        .concat(rail("Los más leídos", "Most read", "vistas",
-          Array.isArray(state.vistaItems) ? state.vistaItems : [])) }],
-    };
-  }
-  if (!items.length) return EMPTY_LIB;
+  // v1.2.0: secciones por género, sin repetidos entre ellas
+  const usados = {};
+  let secciones = [];
+  for (const g of GENEROS_INICIO) secciones = secciones.concat(railGenero(state, g, usados));
   return {
     type: "SingleChildScrollView", key: "home", flex: 1,
     children: [{
@@ -731,14 +806,9 @@ function tabBody(state) {
           subtitle: "Por título, p. ej. Solo Leveling", subtitleEn: "By title, e.g. Solo Leveling",
           trailing: { type: "Icon", name: "arrow_forward" },
           onTap: { event: "goSearch" } },
-      ].concat(rail("Últimas obras", "Latest works", "latest", items))
-        .concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
+      ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
         .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
-        // v1.1.9: populares (likes) y más leídos (visitas)
-        .concat(rail("Manga más populares", "Most popular", "pop",
-          Array.isArray(state.popItems) ? state.popItems : []))
-        .concat(rail("Los más leídos", "Most read", "vistas",
-          Array.isArray(state.vistaItems) ? state.vistaItems : [])),
+        .concat(secciones),
     }],
   };
 }
@@ -1221,26 +1291,28 @@ export async function screenEvent(ev) {
           return { state: { libItems: items, libPage: 1, libDone: items.length < 36 } };
         } catch (e) { return { state: { libItems: [], libError: true } }; }
       }
-      if (tab === "inicio" && !Array.isArray(state.inicioItems)) {
-        try {
-          const html = await getLibHtml(1, "created_at", "");
-          return { state: { inicioItems: seriesCards(html, 30) } };
-        } catch (e) { return { state: { inicioItems: [] } }; }
-      }
-      // v1.1.9: «Manga más populares» (por «me gusta») — un par por tick
-      // para no pedir tres listas de golpe.
-      if (tab === "inicio" && !Array.isArray(state.popItems)) {
-        try {
-          const html = await getLibHtml(1, "likes_count", "");
-          return { state: { popItems: seriesCards(html, 24) } };
-        } catch (e) { return { state: { popItems: [] } }; }
-      }
-      // v1.1.9: «Los más leídos» (por visitas)
-      if (tab === "inicio" && !Array.isArray(state.vistaItems)) {
-        try {
-          const html = await getLibHtml(1, "num_views", "");
-          return { state: { vistaItems: seriesCards(html, 24) } };
-        } catch (e) { return { state: { vistaItems: [] } }; }
+      if (tab === "inicio") {
+        // v1.2.0: primero los ids de los géneros (caché de un día) y
+        // luego UNA sección por tick — la pantalla nunca se bloquea.
+        if (!state.genders) {
+          try { return { state: { genders: await getGenders() } }; }
+          catch (e) { return { state: { genders: {} } }; }
+        }
+        const cats = state.cats || {};
+        for (const g of GENEROS_INICIO) {
+          if (!cats[g.key]) {
+            const id = state.genders[g.key] || "";
+            let items = [];
+            try {
+              if (id) {
+                items = seriesCards(await getLibHtml(1, "likes_count", "", id), 24)
+                  .map((x) => ({ slug: x.slug, poster: x.poster, title: x.title }));
+              }
+            } catch (e) { /* sección vacía; quedará como cargada */ }
+            return { state: { cats: Object.assign({}, cats, { [g.key]: { items, page: 1 } }) } };
+          }
+        }
+        return null;
       }
       return null;
     }
@@ -1288,6 +1360,33 @@ export async function screenEvent(ev) {
         toast: results.length ? results.length + " resultados" : "Sin resultados" };
     }
     if (name === "retry") return { state: { _r: Date.now() } };
+    // v1.2.0: «Ver más» al final de una sección de género — trae la
+    // página siguiente de ese género y la añade a la sección.
+    if (name === "verMas") {
+      const key = String(ev.arg || "");
+      const g = GENEROS_INICIO.find((x) => x.key === key);
+      const cats = state.cats || {};
+      const cat = cats[key];
+      if (!g || !cat || !state.genders) return null;
+      const id = state.genders[key] || "";
+      if (!id) return { toast: "No hay más obras de " + g.label };
+      if (cat.items.length >= GENERO_MAX) return { toast: "La sección ya está completa" };
+      const page = (cat.page || 1) + 1;
+      try {
+        const more = seriesCards(await getLibHtml(page, "likes_count", "", id), 24)
+          .map((x) => ({ slug: x.slug, poster: x.poster, title: x.title }));
+        const vistos = {};
+        for (const it of cat.items) vistos[it.slug] = true;
+        const nuevos = more.filter((it) => !vistos[it.slug]);
+        if (!nuevos.length) return { toast: "No hay más obras de " + g.label };
+        let merged = cat.items.concat(nuevos);
+        if (merged.length > GENERO_MAX) merged = merged.slice(0, GENERO_MAX);
+        return { state: { cats: Object.assign({}, cats, { [key]: { items: merged, page } }) },
+          toast: "+" + nuevos.length + " en " + g.label };
+      } catch (e) {
+        return { toast: "No se pudo cargar más. Inténtalo otra vez." };
+      }
+    }
     // v1.1.4: plegar/desplegar la sinopsis del detalle
     if (name === "toggleSinopsis") {
       return { state: { sinopsisCompleta: state.sinopsisCompleta !== true } };

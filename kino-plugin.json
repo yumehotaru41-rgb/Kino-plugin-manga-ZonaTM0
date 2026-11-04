@@ -1,18 +1,27 @@
 {
   "id": "zonatm0",
   "name": "ZonaTM0",
-  "version": "1.1.9",
+  "version": "1.2.0",
   "description": "Lee obras de zonatmo.org en Kino: Inicio, Biblioteca, Favoritos, Historial y lector webcómic vertical.",
   "author": "yumehotaru41",
   "apiVersion": 14,
-  "capabilities": ["screen", "shared"],
-  "hosts": ["zonatmo.org", "storage.zonatmo.org"],
+  "capabilities": [
+    "screen",
+    "shared"
+  ],
+  "hosts": [
+    "zonatmo.org",
+    "storage.zonatmo.org"
+  ],
   "entry": "plugin.js",
   "icon": "icon.png",
   "screen": {
     "label": "ZonaTM0",
     "iconFile": "icon.png",
     "menuOpens": "screen",
-    "opensFrom": ["menu", "settings"]
+    "opensFrom": [
+      "menu",
+      "settings"
+    ]
   }
 }
