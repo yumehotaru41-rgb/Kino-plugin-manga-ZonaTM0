@@ -10,6 +10,16 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.2 — corregido el lector que se quedaba «Cargando…» para siempre
+// en obras con muchos capítulos (>150 aprox., p. ej. Watashi ga
+// Motenai...). Causa: el estado de una pantalla de Kino tiene un límite
+// de tamaño y al abrir un capítulo se guardaban ahí los capítulos DOS
+// veces (detalle + lector) más las imágenes; al pasarse del límite Kino
+// descartaba el parche y el lector se quedaba cargando. Siguiendo a
+// MangaTrack, lo pesado (capítulos, imágenes) vive en kino.storage y el
+// estado de la pantalla queda mínimo (solo índices): nunca se vuelve a
+// pasar del límite, por larga que sea la obra.
+//
 // v1.1.1:
 //   - Corregido: al abrir una obra justo después de otra, el
 //     «Continuar»/detalle de la anterior (p. ej. Dragon Ball) volvía a
@@ -40,6 +50,7 @@
 
 const BASE = "https://zonatmo.org";
 const MAX_CAPS = 490; // tope de capítulos por pantalla (Kino admite ~600 nodos)
+const LIB_MAX = 144; // tope de obras acumuladas en la Biblioteca (estado pequeño)
 
 // ---------------------------------------------------------------- red
 
@@ -226,7 +237,8 @@ function seriesMeta(html, slug) {
     title: pick(/<h1[^>]*class="[^"]*element-title[^"]*"[^>]*>([^<]{1,200})</) ||
       pick(/property="og:title"[^>]*content="([^"]+)"/) || slug.split("/")[2].replace(/-/g, " "),
     poster,
-    overview,
+    // v1.1.2: sinopsis recortada — el meta SÍ viaja en el estado
+    overview: overview.slice(0, 600),
     status: tmoLabel(html, "Estado"),
     genres: genres.join(", "),
     type: (slug.split("/")[0] || "").toUpperCase(),
@@ -305,6 +317,8 @@ function pageNodes(p, i) {
 // filas de capítulos (también las antiguas) ya están en el HTML.
 // Con caché de 15 minutos (force=true la salta). Tope de MAX_CAPS
 // capítulos (los más recientes) para no pasar del límite de nodos.
+// Lo pesado se guarda en kino.storage («serie:<slug>»); del estado de
+// la pantalla solo viaja el meta (v1.1.2).
 async function loadSeries(slug, force) {
   if (!slugValido(slug)) throw kino.error("arguments", "slug");
   const ck = "serie:" + slug;
@@ -336,17 +350,28 @@ async function loadSeries(slug, force) {
   return { slug, meta, chapters };
 }
 
+// v1.1.2: capítulos de una obra desde kino.storage (sin caducidad: la
+// lista completa no viaja nunca en el estado de la pantalla, que tiene
+// un límite de tamaño). null si no está en caché.
+function chaptersDe(slug) {
+  if (!slugValido(slug)) return null;
+  const c = getJson("serie:" + slug, null);
+  return (c && Array.isArray(c.chapters)) ? c.chapters : null;
+}
+
 // Carga la obra para el detalle: si falla (web caída, sin red, tiempo
 // límite), deja la obra en estado de error — con botón «Reintentar».
+// v1.1.2: al estado solo va el meta — los capítulos quedan en
+// kino.storage y detailTree los lee de ahí.
 async function cargarDetalle(state, slug, force) {
   const prev = (state.detail && state.detail.slug === slug) ? state.detail : null;
   const meta0 = (prev && prev.meta) || {};
   try {
     const d = await loadSeries(slug, force);
-    return { state: { detail: d } };
+    return { state: { detail: { slug, meta: d.meta } } };
   } catch (e) {
     kino.log("detalle", e.message);
-    return { state: { detail: { slug, error: true, meta: meta0, chapters: [] } } };
+    return { state: { detail: { slug, error: true, meta: meta0 } } };
   }
 }
 
@@ -440,12 +465,25 @@ function syncPull() {
 
 // caché de lector (últimos capítulos abiertos), para no volver a pedir
 function readerCache(url) { return getJson("rc:" + url, null); }
-function readerCachePut(url, images) {
+function readerCachePut(url, urls) {
   try {
     const keys = kino.storage.keys().filter((k) => k.indexOf("rc:") === 0);
     if (keys.length > 4) for (const k of keys.slice(0, keys.length - 4)) kino.storage.remove(k);
   } catch (e) { /* la app vieja no lista */ }
-  setJson("rc:" + url, images);
+  setJson("rc:" + url, urls);
+}
+
+// v1.1.2: páginas de un capítulo (lista de URLs de imagen) — primero la
+// caché de storage, si no la red. Si no hay, [].
+async function paginasDe(ch) {
+  const upId = uploadIdDe(ch.url);
+  const c = readerCache(ch.url);
+  if (Array.isArray(c) && c.length) return c;
+  const html = await getHtml(ch.url.replace(BASE, ""), 30000);
+  const imgs = readerImages(html, upId || ch.id);
+  const urls = imgs.map((x) => x.url);
+  if (urls.length) readerCachePut(ch.url, urls);
+  return urls;
 }
 
 // ----------------------------------------------------------- interfaz
@@ -733,7 +771,11 @@ async function detailTree(state) {
       { type: "ElevatedButton", icon: "arrow_back", labelText: "Volver", labelTextEn: "Back",
         onPressed: { event: "popBack" } });
   }
-  if (!Array.isArray(d.chapters) || !d.chapters.length) {
+  // v1.1.2: la lista de capítulos vive en kino.storage, no en el estado
+  // (las obras con muchos capítulos se pasaban del límite de tamaño
+  // del estado y rompían el lector).
+  const chapters = chaptersDe(d.slug) || [];
+  if (!chapters.length) {
     return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
       { type: "Icon", name: "error", color: "muted" },
       { type: "Text", text: "No se encontraron capítulos para esta obra.", textEn: "No chapters found for this work.", color: "muted" },
@@ -749,7 +791,7 @@ async function detailTree(state) {
         fallback: { type: "Icon", name: "list" } }
     : { type: "Icon", name: "list" };
   const pg = progress()[d.slug];
-  const pgIdx = pg && typeof pg.url === "string" ? d.chapters.findIndex((c) => c.url === pg.url) : -1;
+  const pgIdx = pg && typeof pg.url === "string" ? chapters.findIndex((c) => c.url === pg.url) : -1;
   const head = {
     type: "Row", gap: 16, padding: 16, crossAxisAlignment: "start", stackOnNarrow: true,
     children: [
@@ -765,7 +807,7 @@ async function detailTree(state) {
           type: "Row", gap: 8, wrap: true, children: [
             (function () {
               if (pgIdx > 0) {
-                const contLabel = ("Continuar: " + (pg.chTitle || d.chapters[pgIdx].title)).slice(0, 60);
+                const contLabel = ("Continuar: " + (pg.chTitle || chapters[pgIdx].title)).slice(0, 60);
                 return { type: "ElevatedButton", key: "cont", icon: "play",
                   labelText: contLabel, labelTextEn: contLabel,
                   onPressed: { event: "read", arg: String(pgIdx) } };
@@ -776,7 +818,7 @@ async function detailTree(state) {
             })(),
             { type: "ElevatedButton", key: "latest", icon: "expand_more",
               labelText: "Leer lo último", labelTextEn: "Read latest",
-              onPressed: { event: "read", arg: String(d.chapters.length - 1) } },
+              onPressed: { event: "read", arg: String(chapters.length - 1) } },
             { type: "ElevatedButton", key: "fav", icon: fav ? "heart" : "star",
               labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
               labelTextEn: fav ? "Remove favourite" : "Add favourite",
@@ -796,10 +838,10 @@ async function detailTree(state) {
   };
   const items = [head];
   items.push({ type: "Text",
-    text: d.chapters.length + " capítulos" + (d.meta.capped ? " (mostrando los " + MAX_CAPS + " más recientes)" : ""),
-    textEn: d.chapters.length + " chapters", style: "h3", padding: 16 });
-  for (let i = 0; i < d.chapters.length; i++) {
-    const c = d.chapters[i];
+    text: chapters.length + " capítulos" + (d.meta.capped ? " (mostrando los " + MAX_CAPS + " más recientes)" : ""),
+    textEn: chapters.length + " chapters", style: "h3", padding: 16 });
+  for (let i = 0; i < chapters.length; i++) {
+    const c = chapters[i];
     items.push({
       type: "ListTile", key: "ch" + i, dense: true,
       title: c.title,
@@ -852,8 +894,10 @@ function paginaFit(p, i) {
 async function readerTree(state) {
   const r = state.reader;
   if (!r) return loadingTree();
-  const pages = r.images || [];
-  const chapters = Array.isArray(r.chapters) ? r.chapters : [];
+  // v1.1.2: el lector en el estado es mínimo (slug, índice y páginas);
+  // la lista de capítulos se lee de kino.storage.
+  const pages = Array.isArray(r.imgs) ? r.imgs : [];
+  const chapters = chaptersDe(r.slug) || [];
   const ch = chapters[r.idx];
   if (!ch || !pages.length) {
     return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
@@ -865,7 +909,7 @@ async function readerTree(state) {
   }
   const hasNext = r.idx + 1 < chapters.length;
   const hasPrev = r.idx > 0;
-  const chKey = String(ch ? ch.url : r.idx).replace(/[^a-z0-9]/gi, "").slice(-16);
+  const chKey = String(ch.url).replace(/[^a-z0-9]/gi, "").slice(-16);
   const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
   const modo = modoLectorEfectivo(pages.length);
   const inm = getJson("lectorInm", 0) ? true : false;
@@ -884,15 +928,18 @@ async function readerTree(state) {
       }],
     });
   }
+  // v1.1.2: el menú «Ir a capítulo» solo ofrece los capítulos cercanos
+  // al actual (en obras largas, 490 opciones romperían el límite de
+  // nodos por pantalla).
+  const desde = Math.max(0, Math.min(r.idx - 25, Math.max(0, chapters.length - 60)));
+  const opciones = chapters.slice(desde, desde + 60)
+    .map((c, k) => ({ value: String(desde + k), label: c.title }));
   if (!inm) body.push({
     type: "Row", gap: 12, padding: 16, mainAxisAlignment: "center", wrap: true, children: [
       { type: "ElevatedButton", icon: "arrow_back", labelText: "Anterior", labelTextEn: "Previous",
         onPressed: "prevChap", enabled: hasPrev },
       { type: "DropdownButton", key: "jumpChap", labelText: "Ir a capítulo", labelTextEn: "Go to chapter",
-        value: String(r.idx), onChanged: "jumpChap",
-        options: chapters.length
-          ? chapters.map((c, i) => ({ value: String(i), label: c.title }))
-          : [{ value: "0", label: "—" }] },
+        value: String(r.idx), onChanged: "jumpChap", options: opciones },
       { type: "ElevatedButton", labelText: hasNext ? "Siguiente" : "Último capítulo",
         labelTextEn: hasNext ? "Next" : "Last chapter",
         icon: "arrow_forward", onPressed: "nextChap", enabled: hasNext },
@@ -910,7 +957,7 @@ async function readerTree(state) {
   const raiz = {
     type: "Scaffold",
     appBar: inm ? undefined : { type: "AppBar", mergeWithKinoBar: true, dense: true, key: "barReader",
-      title: ch ? ch.title : "Leyendo",
+      title: ch.title,
       leading: { type: "IconButton", key: "backFromReader", icon: "arrow_back",
         labelText: "Atrás", labelTextEn: "Back",
         onPressed: { event: "popBack" } },
@@ -1005,8 +1052,7 @@ function detailLoadingDe(slug) {
   const info = CARDINFO[slug] || {};
   slugDetalleActivo = slug;
   return { slug, loading: true,
-    meta: { title: info.title || "", poster: info.poster || "" },
-    chapters: [] };
+    meta: { title: info.title || "", poster: info.poster || "" } };
 }
 
 export async function screenEvent(ev) {
@@ -1078,8 +1124,8 @@ export async function screenEvent(ev) {
       const page = (state.libPage || 1) + 1;
       const more = await fetchLibrary(page);
       let merged = (state.libItems || []).concat(more.filter((x) => !(state.libItems || []).some((y) => y.slug === x.slug)));
-      if (merged.length > 216) merged = merged.slice(0, 216);
-      return { state: { libItems: merged, libPage: page, libDone: more.length < 36 || merged.length >= 216 } };
+      if (merged.length > LIB_MAX) merged = merged.slice(0, LIB_MAX);
+      return { state: { libItems: merged, libPage: page, libDone: more.length < 36 || merged.length >= LIB_MAX } };
     }
     if (name === "goSearch") return { route: { push: "search" } };
     if (name === "popBack") return { route: { pop: true } };
@@ -1120,7 +1166,7 @@ export async function screenEvent(ev) {
       const d = state.detail;
       if (!d) return null;
       return { state: { detail: { slug: d.slug, loading: true, refresh: true,
-        meta: d.meta || {}, chapters: [] } } };
+        meta: d.meta || {} } } };
     }
     if (name === "fav") {
       const d = state.detail;
@@ -1135,18 +1181,21 @@ export async function screenEvent(ev) {
       return { toast: added ? "Añadida a favoritos" : "Quitada de favoritos" };
     }
     if (name === "read" || name === "nextChap" || name === "prevChap" || name === "jumpChap") {
+      // v1.1.2: la lista de capítulos ya no viaja en el estado (era lo
+      // que desbordaba el límite en obras largas y dejaba el lector
+      // «Cargando…» para siempre); se lee de kino.storage.
       let chapters, idx, slug, title, poster;
       if (name === "read") {
         const d = state.detail;
         if (!d) return null;
-        chapters = d.chapters;
+        chapters = chaptersDe(d.slug) || [];
         idx = parseInt(String(ev.arg || "0"), 10) || 0;
         slug = d.slug; title = d.meta.title; poster = d.meta.poster;
         if (idx < 0 || idx >= chapters.length) return null;
       } else {
         const r = state.reader;
         if (!r) return null;
-        chapters = r.chapters;
+        chapters = chaptersDe(r.slug) || [];
         idx = name === "jumpChap"
           ? parseInt(String(ev.value || "0"), 10) || 0
           : r.idx + (name === "nextChap" ? 1 : -1);
@@ -1154,18 +1203,11 @@ export async function screenEvent(ev) {
         if (idx < 0 || idx >= chapters.length) return null;
       }
       const ch = chapters[idx];
-      const upId = uploadIdDe(ch.url);
-      let images = readerCache(ch.url);
-      if (!images || !upId || !images.length) {
-        const html = await getHtml(ch.url.replace(BASE, ""), 30000);
-        images = readerImages(html, upId || ch.id);
-        if (images.length) readerCachePut(ch.url, images);
-      }
+      const images = await paginasDe(ch);
       if (!images.length) return { toast: "No se encontraron páginas en este capítulo." };
-      // v1.1.0: sin medición de imágenes — el lector abre ya mismo y
-      // Kino ajusta cada página a su proporción real al cargarla.
+      // v1.1.2: estado del lector mínimo — sin lista de capítulos.
       markRead(slug, title, poster, ch.title, ch.url);
-      const reader = { slug, title, poster, chapters, idx, images, tk: ++navSeq };
+      const reader = { slug, title, poster, idx, chUrl: ch.url, imgs: images, tk: ++navSeq };
       const resp = { state: { reader } };
       if (name === "read") resp.route = { push: "read" };
       if (modoLectorEfectivo(images.length) === "paginas") {
@@ -1177,9 +1219,7 @@ export async function screenEvent(ev) {
     }
     if (name === "pgChanged") {
       const r = state.reader;
-      if (!r) return null;
-      const ch = (r.chapters || [])[r.idx];
-      if (!ch || !ch.url) return null;
+      if (!r || !r.chUrl) return null;
       let at = parseInt(String(ev.value === undefined ? "" : ev.value), 10);
       if (!(at >= 0)) at = 0;
       const ks = [];
@@ -1187,7 +1227,7 @@ export async function screenEvent(ev) {
         for (const k of kino.storage.keys()) if (k.indexOf("pg:") === 0) ks.push(k);
       } catch (e) { }
       if (ks.length > 300) for (const k of ks.slice(0, ks.length - 300)) try { kino.storage.remove(k); } catch (e) { }
-      try { kino.storage.set("pg:" + ch.url, String(at)); } catch (e) { }
+      try { kino.storage.set("pg:" + r.chUrl, String(at)); } catch (e) { }
       return null;
     }
     if (name === "lectorInm") {
