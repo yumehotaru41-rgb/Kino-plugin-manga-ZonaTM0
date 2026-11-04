@@ -10,10 +10,20 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.4 — a petición del usuario:
+//   - «Anterior» y «Siguiente» SIEMPRE visibles y activos en el lector
+//     (antes, al llegar al último capítulo, «Siguiente» quedaba
+//     deshabilitado y desaparecía del panel). Si no hay más capítulos,
+//     se avisa con un toast.
+//   - Detalle: sinopsis larga recortada con botón «Ver toda la
+//     sinopsis» (y «Menos» para volver a plegarla).
+//   - Botones del detalle reorganizados en dos filas limpias, sin
+//     huecos: fila principal (Continuar/Empezar · Leer lo último) y
+//     fila secundaria compacta (Favoritos · Actualizar · Olvidar).
+//
 // v1.1.3 — panel inferior del lector rediseñado:
 //   - Eliminado el desplegable «Ir a capítulo» (desordenaba el panel).
-//   - Ahora es una tarjeta compacta: «Anterior» y «Siguiente» grandes
-//     y a partes iguales, separados por un divisor de una fila
+//   - Tarjeta compacta: «Anterior»/«Siguiente» grandes y una fila
 //     secundaria (modo de lectura · pantalla completa · cap. X de N).
 //
 // v1.1.2 — corregido el lector que se quedaba «Cargando…» para siempre
@@ -23,8 +33,7 @@
 // veces (detalle + lector) más las imágenes; al pasarse del límite Kino
 // descartaba el parche y el lector se quedaba cargando. Siguiendo a
 // MangaTrack, lo pesado (capítulos, imágenes) vive en kino.storage y el
-// estado de la pantalla queda mínimo (solo índices): nunca se vuelve a
-// pasar del límite, por larga que sea la obra.
+// estado de la pantalla queda mínimo (solo índices).
 //
 // v1.1.1:
 //   - Corregido: al abrir una obra justo después de otra, el
@@ -47,9 +56,7 @@
 //   - Inicio y Biblioteca también se pintan al instante (caché o
 //     esqueletos) y se rellenan por el temporizador.
 //   - Lector sin medir imágenes: fit "width" + aspect "2:3" y Kino da
-//     a cada página su proporción real al cargarla (receta MangaTrack);
-//     se eliminaron las descargas de cabeceras que eternizaban la
-//     apertura en redes lentas.
+//     a cada página su proporción real al cargarla (receta MangaTrack).
 //   - Tope de 490 capítulos (los más recientes) por pantalla.
 //
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
@@ -765,6 +772,28 @@ function detailLoadingTree(d) {
   };
 }
 
+// v1.1.4: la sinopsis, plegada si es larga, con botón para extenderla
+function sinopsisNode(state, overview) {
+  const o = overview || "";
+  const completa = state.sinopsisCompleta === true;
+  if (o.length <= 240 || completa) {
+    const children = [{ type: "Text", key: "sinopsisTxt", text: o, textEn: o, style: "p", color: "muted" }];
+    if (o.length > 240) {
+      children.push({ type: "TextButton", key: "sinMenos", icon: "expand_less",
+        labelText: "Menos", labelTextEn: "Less", onPressed: { event: "toggleSinopsis" } });
+    }
+    return { type: "Column", key: "sinopsis", gap: 4, crossAxisAlignment: "start", children: children };
+  }
+  return { type: "Column", key: "sinopsis", gap: 4, crossAxisAlignment: "start", children: [
+    { type: "Text", key: "sinopsisTxt",
+      text: o.slice(0, 240).trim() + "…", textEn: o.slice(0, 240).trim() + "…",
+      style: "p", color: "muted" },
+    { type: "TextButton", key: "sinMas", icon: "expand_more",
+      labelText: "Ver toda la sinopsis", labelTextEn: "Full synopsis",
+      onPressed: { event: "toggleSinopsis" } },
+  ] };
+}
+
 async function detailTree(state) {
   const d = state.detail;
   if (!d) return loadingTree();
@@ -798,47 +827,58 @@ async function detailTree(state) {
     : { type: "Icon", name: "list" };
   const pg = progress()[d.slug];
   const pgIdx = pg && typeof pg.url === "string" ? chapters.findIndex((c) => c.url === pg.url) : -1;
+  // v1.1.4: botones en dos filas limpias, sin huecos:
+  //  - fila principal (a partes iguales): Continuar/Empezar · Leer lo
+  //    último
+  //  - fila secundaria compacta: Favoritos · Actualizar · Olvidar lo
+  //    leído (solo si hay progreso)
+  const filaPrincipal = (function () {
+    if (pgIdx > 0) {
+      const contLabel = ("Continuar: " + (pg.chTitle || chapters[pgIdx].title)).slice(0, 60);
+      return { type: "ElevatedButton", key: "cont", icon: "play",
+        labelText: contLabel, labelTextEn: contLabel, fill: true, flex: 1,
+        onPressed: { event: "read", arg: String(pgIdx) } };
+    }
+    return { type: "ElevatedButton", key: "start", icon: "play",
+      labelText: "Empezar a leer", labelTextEn: "Start reading",
+      fill: true, flex: 1, onPressed: { event: "read", arg: "0" } };
+  })();
+  const filaSecundaria = [
+    { type: "ElevatedButton", key: "fav", icon: fav ? "heart" : "star",
+      labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
+      labelTextEn: fav ? "Remove favourite" : "Add favourite",
+      fill: true, flex: 1, onPressed: "fav" },
+    // Actualizar: salta el caché y trae los capítulos nuevos
+    { type: "ElevatedButton", key: "refresh", icon: "refresh",
+      labelText: "Actualizar", labelTextEn: "Refresh",
+      fill: true, flex: 1, onPressed: "reloadSeries" },
+  ];
+  if (pg) {
+    filaSecundaria.push({ type: "ElevatedButton", key: "olvidar", icon: "delete",
+      labelText: "Olvidar lo leído", labelTextEn: "Forget read progress",
+      fill: true, flex: 1, onPressed: { event: "borrarProg", arg: d.slug } });
+  }
   const head = {
     type: "Row", gap: 16, padding: 16, crossAxisAlignment: "start", stackOnNarrow: true,
     children: [
       cover,
       { type: "Column", gap: 6, flex: 2, crossAxisAlignment: "start", children: [
         { type: "Text", text: d.meta.title || d.slug, style: "h2" },
-        d.meta.type ? { type: "Text", text: d.meta.type, color: "muted" } : null,
-        d.meta.status ? { type: "Badge", text: d.meta.status } : null,
-        d.meta.author ? { type: "Text", text: d.meta.author, color: "muted", style: "caption" } : null,
-        d.meta.genres ? { type: "Text", text: "Géneros: " + d.meta.genres, textEn: "Genres: " + d.meta.genres, color: "muted", style: "caption" } : null,
-        { type: "Text", text: d.meta.overview, style: "p", color: "muted" },
-        {
-          type: "Row", gap: 8, wrap: true, children: [
-            (function () {
-              if (pgIdx > 0) {
-                const contLabel = ("Continuar: " + (pg.chTitle || chapters[pgIdx].title)).slice(0, 60);
-                return { type: "ElevatedButton", key: "cont", icon: "play",
-                  labelText: contLabel, labelTextEn: contLabel,
-                  onPressed: { event: "read", arg: String(pgIdx) } };
-              }
-              return { type: "ElevatedButton", key: "start", icon: "play",
-                labelText: "Empezar a leer", labelTextEn: "Start reading",
-                onPressed: { event: "read", arg: "0" } };
-            })(),
-            { type: "ElevatedButton", key: "latest", icon: "expand_more",
-              labelText: "Leer lo último", labelTextEn: "Read latest",
-              onPressed: { event: "read", arg: String(chapters.length - 1) } },
-            { type: "ElevatedButton", key: "fav", icon: fav ? "heart" : "star",
-              labelText: fav ? "Quitar de favoritos" : "Añadir a favoritos",
-              labelTextEn: fav ? "Remove favourite" : "Add favourite",
-              onPressed: "fav" },
-            // Actualizar: salta el caché y trae los capítulos nuevos
-            { type: "ElevatedButton", key: "refresh", icon: "refresh",
-              labelText: "Actualizar", labelTextEn: "Refresh",
-              onPressed: "reloadSeries" },
-          ],
-        },
-        // v1.1.1: sacar esta obra de «Seguir leyendo»/Historial
-        (pg ? { type: "TextButton", key: "olvidar", icon: "delete",
-          labelText: "Olvidar lo leído", labelTextEn: "Forget read progress",
-          onPressed: { event: "borrarProg", arg: d.slug } } : null),
+        d.meta.type ? { type: "Text", key: "tipo", text: d.meta.type, color: "muted" } : null,
+        d.meta.status ? { type: "Badge", key: "estado", text: d.meta.status } : null,
+        d.meta.author ? { type: "Text", key: "autor", text: d.meta.author, color: "muted", style: "caption" } : null,
+        d.meta.genres ? { type: "Text", key: "generos", text: "Géneros: " + d.meta.genres, textEn: "Genres: " + d.meta.genres, color: "muted", style: "caption" } : null,
+        // v1.1.4: sinopsis plegable
+        sinopsisNode(state, d.meta.overview),
+        // v1.1.4: fila principal — leer, sin huecos
+        { type: "Row", key: "filaLeer", gap: 8, children: [
+          filaPrincipal,
+          { type: "ElevatedButton", key: "latest", icon: "expand_more",
+            labelText: "Leer lo último", labelTextEn: "Read latest",
+            fill: true, flex: 1, onPressed: { event: "read", arg: String(chapters.length - 1) } },
+        ] },
+        // v1.1.4: fila secundaria — gestión, sin huecos
+        { type: "Row", key: "filaGestion", gap: 8, children: filaSecundaria },
       ].filter(Boolean) },
     ],
   };
@@ -897,13 +937,12 @@ function paginaFit(p, i) {
       fill: true, fit: "width", aspect: "2:3" } ] };
 }
 
-// v1.1.3: panel inferior del lector — una tarjeta compacta en vez de
-// la fila de botones desordenada (y sin el desplegable «Ir a
-// capítulo»): arriba «Anterior»/«Siguiente» grandes a partes iguales,
-// y debajo, tras un divisor, la fila secundaria (modo · pantalla
-// completa · cap. X de N). En el primer capítulo «Anterior» se apaga y
-// en el último «Siguiente» dice «Último capítulo».
-function panelInferior(r, chapters, hasNext, hasPrev, modo, inm) {
+// v1.1.4: panel inferior del lector — «Anterior» y «Siguiente» SIEMPRE
+// visibles y activos (aunque no haya capítulo previo/siguiente, se
+// avisa con un toast) para poder cambiar rápido en cualquier punto.
+// Debajo, tras un divisor, la fila secundaria (modo · pantalla
+// completa) y el contador «Capítulo X de N».
+function panelInferior(r, chapters, modo) {
   const secundaria = [];
   if (pagesDisponible()) {
     secundaria.push({ type: "TextButton", key: "btnModo",
@@ -920,11 +959,10 @@ function panelInferior(r, chapters, hasNext, hasPrev, modo, inm) {
       { type: "Row", gap: 12, children: [
         { type: "ElevatedButton", key: "btnPrev", icon: "arrow_back",
           labelText: "Anterior", labelTextEn: "Previous",
-          onPressed: "prevChap", enabled: hasPrev, fill: true },
+          onPressed: "prevChap", fill: true },
         { type: "ElevatedButton", key: "btnNext", icon: "arrow_forward",
-          labelText: hasNext ? "Siguiente" : "Último capítulo",
-          labelTextEn: hasNext ? "Next" : "Last chapter",
-          onPressed: "nextChap", enabled: hasNext, fill: true },
+          labelText: "Siguiente", labelTextEn: "Next",
+          onPressed: "nextChap", fill: true },
       ] },
       { type: "Divider", key: "sepPanel" },
       { type: "Row", gap: 8, mainAxisAlignment: "center", wrap: true, children: secundaria },
@@ -952,8 +990,6 @@ async function readerTree(state) {
         onPressed: { event: "popBack" } },
     ] };
   }
-  const hasNext = r.idx + 1 < chapters.length;
-  const hasPrev = r.idx > 0;
   const chKey = String(ch.url).replace(/[^a-z0-9]/gi, "").slice(-16);
   const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
   const modo = modoLectorEfectivo(pages.length);
@@ -973,7 +1009,7 @@ async function readerTree(state) {
       }],
     });
   }
-  if (!inm) body.push(panelInferior(r, chapters, hasNext, hasPrev, modo, inm));
+  if (!inm) body.push(panelInferior(r, chapters, modo));
   const raiz = {
     type: "Scaffold",
     appBar: inm ? undefined : { type: "AppBar", mergeWithKinoBar: true, dense: true, key: "barReader",
@@ -1158,6 +1194,10 @@ export async function screenEvent(ev) {
         toast: results.length ? results.length + " resultados" : "Sin resultados" };
     }
     if (name === "retry") return { state: { _r: Date.now() } };
+    // v1.1.4: plegar/desplegar la sinopsis del detalle
+    if (name === "toggleSinopsis") {
+      return { state: { sinopsisCompleta: state.sinopsisCompleta !== true } };
+    }
     // v1.1.1: quitar UNA obra de «Seguir leyendo»/Historial (botón
     // «Olvidar lo leído» del detalle o pulsación larga en Historial)
     if (name === "borrarProg") {
@@ -1204,7 +1244,8 @@ export async function screenEvent(ev) {
       // v1.1.2: la lista de capítulos ya no viaja en el estado (era lo
       // que desbordaba el límite en obras largas y dejaba el lector
       // «Cargando…» para siempre); se lee de kino.storage.
-      // v1.1.3: sin «Ir a capítulo» — solo Anterior/Siguiente.
+      // v1.1.4: «Anterior» y «Siguiente» siempre activos — si no hay
+      // más capítulo en esa dirección, se avisa con un toast.
       let chapters, idx, slug, title, poster;
       if (name === "read") {
         const d = state.detail;
@@ -1219,7 +1260,8 @@ export async function screenEvent(ev) {
         chapters = chaptersDe(r.slug) || [];
         idx = r.idx + (name === "nextChap" ? 1 : -1);
         slug = r.slug; title = r.title; poster = r.poster;
-        if (idx < 0 || idx >= chapters.length) return null;
+        if (idx >= chapters.length) return { toast: "Ya estás en el último capítulo" };
+        if (idx < 0) return { toast: "Ya estás en el primer capítulo" };
       }
       const ch = chapters[idx];
       const images = await paginasDe(ch);

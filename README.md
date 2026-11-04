@@ -1,53 +1,53 @@
-# Kino Plugin — ZonaTM0
+# Kino-plugin-manga-ZonaTM0
 
-Plugin de Kino para leer obras de zonatmo.org (ZonaTM0).
+Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para leer manga y webcómics de **zonatmo.org** (ZonaTM0) en el teléfono y en la TV desde el mismo código.
 
-*   **Autor**: Hotaru Yume (`hotaruyume`)
-*   **Inicio**: últimas obras, **Seguir leyendo** (lo que empezaste, automáticamente) y favoritos; **Biblioteca** (las más populares, paginada), **Favoritos**, **Historial** y **buscador** por título.
-*   **Tarjetas propias de lectura** con el título en dos filas; **navegación real** (Atrás retrocede lector → detalle → pestañas).
-*   **Detalle de obra**: portada, estado, autor, géneros, sinopsis y capítulos (con su grupo de traducción); botones **«Continuar»** y **«Actualizar»**.
-*   **Lector webcómic**: páginas verticales enteras a ancho de pantalla, sin recortes; tira vertical o **modo página a página** (Kino 0.9.81+), con **zoom por pellizco** y **«Pantalla completa»** que oculta las barras (se recuerda). Panel inferior en tarjeta: **Anterior/Siguiente** grandes y fila secundaria compacta (modo · pantalla completa · cap. X de N).
-*   **Ícono del plugin**: icon.png 96×96 declarado en el manifiesto (`icon` + `screen.iconFile`).
-*   **Sincronización entre aparatos** (`shared`): favoritos y progreso entre teléfono y TV vinculados.
+## Qué incluye
 
-Las novelas de texto del catálogo se omiten (no tienen páginas que leer).
+- **Inicio** — últimas obras, «Seguir leyendo» (continúa donde lo dejaste) y tus favoritos.
+- **Biblioteca** — las obras más populares de ZonaTM0, con scroll infinito.
+- **Favoritos** — marca obras con el corazón y sincroniza entre dispositivos.
+- **Historial** — todo lo que has leído, con pulsación larga para quitar una entrada y «Borrar todo» (con confirmación en dos toques).
+- **Buscar** — por título.
+- **Detalle de obra** — portada, estado, autor, géneros y sinopsis (las sinopsis muy largas se recortan y se extienden con «Ver toda la sinopsis»). Botones en dos filas sin huecos: Continuar/Empezar · Leer lo último, y Favoritos · Actualizar · Olvidar lo leído.
+- **Lector** — tira vertical con zoom o modo páginas (si tu Kino lo admite). El panel inferior muestra «Anterior» y «Siguiente» SIEMPRE visibles y activos (con aviso al llegar al primer/último capítulo), el modo de lectura, la pantalla completa y «Capítulo X de N».
 
-## Instalación
+## Rendimiento (desde 1.1.0, receta de MangaTrack)
 
-Requiere **Kino 0.9.74+** (apiVersion 14). Añade `yumehotaru41-rgb/Kino-plugin-manga-ZonaTM0` en Ajustes ▸ Plugins ▸ + y actualiza a la versión **1.1.3**.
+Nada bloquea la pantalla: el detalle, el Inicio y la Biblioteca se pintan al instante (caché o esqueletos) y los datos llegan en segundo plano con temporizadores. Las páginas del lector no se miden: Kino les da su proporción real al cargar (fit "width" + aspect "2:3"). Tope de 490 capítulos por pantalla (los más recientes) y de 15 minutos de caché por obra. Desde 1.1.2 lo pesado (capítulos e imágenes) vive en `kino.storage`, no en el estado de la pantalla: arregla el lector que se quedaba «Cargando…» para siempre en obras con más de ~150 capítulos.
 
-## Cambios en 1.1.3 — panel inferior del lector rediseñado
+## Cambios en 1.1.4 — botones siempre activos y sinopsis plegable
 
-*   **Eliminado el desplegable «Ir a capítulo»** (desordenaba el panel y desbordaba en obras largas).
-*   El panel inferior ahora es **una tarjeta compacta**:
-    *   Fila principal: **«Anterior»** y **«Siguiente»** grandes, a partes iguales («Anterior» se apaga en el primer capítulo; «Siguiente» dice «Último capítulo» al final).
-    *   Divisor y fila secundaria: **modo tira/páginas**, **pantalla completa** y el contador **«Capítulo X de N»**.
+- «Anterior» y «Siguiente» SIEMPRE visibles y activos en el lector: aunque estés en el primer o último capítulo, el botón responde y avisa con un toast («Ya estás en el último capítulo»). Ya no desaparece ni se deshabilita «Siguiente» al terminar un capítulo.
+- Detalle: sinopsis larga recortada con «Ver toda la sinopsis» y «Menos» para volver a plegarla.
+- Botones del detalle reorganizados en dos filas sin espacios vacíos (Continuar/Empezar · Leer lo último arriba; Favoritos · Actualizar · Olvidar lo leído abajo).
 
-## Cambios en 1.1.2 — lector que se quedaba «Cargando…» en obras largas
+## Cambios en 1.1.3 — panel inferior del lector
 
-*   **Corregido**: en obras con muchos capítulos (>150 aprox., p. ej. *Watashi ga Motenai no wa Dou Kangaetemo Omaera ga Warui!*), la lista de capítulos se veía bien pero al abrir uno el lector se quedaba «Cargando…» para siempre. La causa: el estado de una pantalla de Kino tiene un **límite de tamaño**, y al abrir un capítulo se guardaban ahí los capítulos **dos veces** (detalle + lector) más las imágenes; en cuanto la obra era larga, Kino descartaba el parche de estado y el lector se quedaba colgado.
-*   Siguiendo el patrón de MangaTrack, **lo pesado (capítulos, imágenes) vive ahora en `kino.storage`** y el estado de la pantalla viaja mínimo (solo índices): por larga que sea la obra, nunca se vuelve a pasar del límite.
+- Rediseño del panel inferior como tarjeta compacta.
+- Eliminado el desplegable «Ir a capítulo».
 
-## Cambios en 1.1.1
+## Cambios en 1.1.2 — lector arreglado en obras largas
 
-*   **Corregido el «Continuar» mezclado entre obras**: al abrir una obra justo después de otra (p. ej. Dragon Ball y luego otra), volvía a aparecer el capítulo de la primera. La causa: un temporizador que aún cargaba la obra anterior devolvía su resultado tarde y sobrescribía el detalle nuevo. Ahora ese resultado se descarta si mientras tanto se abrió otra obra, y cada tick autocorrige el detalle si no coincide con la obra que se está viendo.
-*   **Borrar de «Seguir leyendo»/Historial**, de tres formas:
-    *   Botón **«Olvidar lo leído»** en el detalle de la obra (aparece cuando hay progreso guardado).
-    *   **Mantén pulsada** una entrada del Historial para quitar solo esa obra.
-    *   Botón **«Borrar todo»** al inicio del Historial (pide confirmar con un segundo toque). Los borrados se sincronizan también con tus otros aparatos.
+- Corregido el «Cargando…» eterno al abrir capítulos de obras con muchos capítulos (p. ej. *Watashi ga Motenai no wa Dou Kangaetemo Omaera ga Warui!*): el estado de la pantalla tiene un límite de tamaño y ahora lo pesado vive en `kino.storage`.
 
-## Cambios en 1.1.0 — nunca más un «Cargando…» eterno
+## Cambios en 1.1.1 — «Continuar» fiable y borrado
 
-Siguiendo el patrón del plugin oficial **MangaTrack**:
+- Corregido: al abrir una obra justo después de otra, reaparecía el «Continuar»/detalle de la anterior (p. ej. Dragon Ball).
+- Añadido «Olvidar lo leído» en el detalle, quitar entradas sueltas del Historial y «Borrar todo el historial».
 
-*   **Abrir una obra es instantáneo**: el detalle se abre enseguida con su portada/título y **esqueletos** de capítulos; los datos llegan en **segundo plano** mediante el temporizador de pantalla (`every`), cuyos ticks no cuentan para el aviso «No responde» de Kino. Si tu Kino no tuviera temporizadores, queda el botón **«Cargar ahora»**.
-*   **Inicio y Biblioteca también al instante**: se pintan de inmediato (caché o esqueletos) y el temporizador trae lo que falte sin bloquear la pantalla.
-*   **Lector sin medir imágenes**: se eliminaron las descargas de cabeceras que eternizaban la apertura en redes lentas; ahora cada página usa `fit: width` y Kino le da su proporción real en cuanto carga (receta de MangaTrack).
-*   **Tope de 490 capítulos** (los más recientes) por pantalla, con aviso «mostrando los 490 más recientes» en series muy largas — Kino admite ~600 nodos por pantalla.
-*   La página de una obra (que en series largas es enorme) ahora tiene **60 s** de tiempo límite; los capítulos se ordenan y deduplican igual que antes.
+## Instalación (Kino 0.9.74 o superior)
 
-## Cómo funciona
+1. Abre Kino → Ajustes → Plugins.
+2. Añade el repositorio `yumehotaru41-rgb/Kino-plugin-manga-ZonaTM0` (o la URL de este repo en raw).
+3. Instala **ZonaTM0 v1.1.4**.
+4. Aparece en el menú lateral / buscador de Kino como «ZonaTM0».
 
-*   **Biblioteca** por AJAX (`/biblioteca?...&page=N`, respuesta JSON con el fragmento HTML de la rejilla).
-*   **Ficha de obra** en `/library/<tipo>/<id>/<slug>`; capítulos en las filas `li.upload-link` (enlaces `/view_uploads/<id>`).
-*   **Lector** en `/view_uploads/<id>`; páginas servidas desde `storage.zonatmo.org/chapters/<id>/<n>.webp`.
+> Nota: añade el topic `kino-plugin` al repo en GitHub para que aparezca en el listado oficial de plugins de Kino.
+
+## Estructura del sitio que usa
+
+- Biblioteca AJAX: `GET /biblioteca?title=…&filter_by=title&order_item=likes_count|created_at&order_dir=desc&page=N` → JSON `{ html }`.
+- Ficha: `/library/<tipo>/<id>/<slug>/` (novelas descartadas).
+- Capítulos: `li.upload-link` → `/view_uploads/<id>`.
+- Lector: imágenes en `storage.zonatmo.org/chapters/<id>/<n>.webp`.
