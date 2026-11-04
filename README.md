@@ -9,16 +9,21 @@ Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para leer manga y we
 - **Favoritos** — marca obras con el corazón y sincroniza entre dispositivos.
 - **Historial** — todo lo que has leído, con pulsación larga para quitar una entrada y «Borrar todo» (con confirmación en dos toques).
 - **Buscar** — por título.
-- **Detalle de obra** — portada, estado, autor, géneros y sinopsis (las sinopsis muy largas se recortan y se extienden con «Ver toda la sinopsis»). Fila de lectura con «Seguir · Cap. N» (doble de ancho, el número se lee completo) y «Lo último»; debajo, Favoritos · Actualizar · Olvidar lo leído como iconos compactos.
+- **Detalle de obra** — portada, estado, autor, géneros y sinopsis (plegable si es larga). Botón único de lectura («Seguir · Cap. N», a todo el ancho); Favoritos · Actualizar · Olvidar lo leído como iconos compactos; y junto al contador de capítulos, un conmutador «Desde lo último / Desde el principio» que invierte el orden de la lista.
 - **Lector** — tira vertical con zoom, siempre en pantalla completa. Al terminar cada capítulo, una tarjeta con «Volver al detalle», «Capítulo X de N», «Anterior» y «Siguiente» (siempre activos; en los extremos avisan con un toast) y el cambio de modo si tu Kino admite el modo páginas.
 
 ## Rendimiento (desde 1.1.0, receta de MangaTrack)
 
 Nada bloquea la pantalla: el detalle, el Inicio y la Biblioteca se pintan al instante (caché o esqueletos) y los datos llegan en segundo plano con temporizadores. Las páginas del lector no se miden: Kino les da su proporción real al cargar (fit "width" + aspect "2:3"). Tope de 490 capítulos por pantalla (los más recientes) y de 15 minutos de caché por obra. Lo pesado (capítulos e imágenes) vive en `kino.storage`, no en el estado de la pantalla (v1.1.2).
 
+## Cambios en 1.1.8 — conmutador de orden de capítulos
+
+- Fuera el botón «Lo último» de la fila de lectura: «Seguir · Cap. N» queda solo y ocupa todo el ancho.
+- Junto al contador de capítulos («315 capítulos»), a su derecha, un conmutador «Desde lo último / Desde el principio» que invierte el orden de la lista de capítulos, con toast de confirmación.
+
 ## Cambios en 1.1.7 — número de capítulo completo
 
-- El botón de continuar usa un sinónimo más corto («Seguir · Cap. N») y ocupa el doble de ancho que «Lo último»: el número del capítulo se lee completo, sin cortes.
+- El botón de continuar usa un sinónimo más corto («Seguir · Cap. N») y ocupaba el doble de ancho que «Lo último»: el número del capítulo se lee completo, sin cortes.
 
 ## Cambios en 1.1.6 — lector siempre a pantalla completa
 
@@ -58,7 +63,7 @@ Nada bloquea la pantalla: el detalle, el Inicio y la Biblioteca se pintan al ins
 
 1. Abre Kino → Ajustes → Plugins.
 2. Añade el repositorio `yumehotaru41-rgb/Kino-plugin-manga-ZonaTM0` (o la URL de este repo en raw).
-3. Instala **ZonaTM0 v1.1.7**.
+3. Instala **ZonaTM0 v1.1.8**.
 4. Aparece en el menú lateral / franja de Inicio de Kino como «ZonaTM0» (y un botón «Abrir pantalla» en su página de ajustes).
 
 > Nota: añade el topic `kino-plugin` al repo en GitHub para que aparezca en el listado oficial de plugins de Kino.

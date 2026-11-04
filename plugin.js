@@ -10,6 +10,13 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.8 — a petición del usuario:
+//   - Fuera el botón «Lo último» de la fila de lectura: «Seguir ·
+//     Cap. N» queda solo y ocupa todo el ancho.
+//   - Junto al contador de capítulos («315 capítulos»), a su derecha,
+//     un conmutador «Desde lo último / Desde el principio» que invierte
+//     el orden de la lista de capítulos.
+//
 // v1.1.7 — a petición del usuario:
 //   - Fila de lectura del detalle: el botón de continuar usa un
 //     sinónimo más corto («Seguir · Cap. N») y ocupa el doble de
@@ -860,19 +867,17 @@ async function detailTree(state) {
   //    último
   //  - fila secundaria compacta: Favoritos · Actualizar · Olvidar lo
   //    leído (solo si hay progreso)
-  // v1.1.7: «Seguir · Cap. N» (sinónimo corto de Continuar) con el
-  // doble de ancho: el número de capítulo se lee completo. «Lo último»
-  // se acorta también para darle sitio.
+  // v1.1.8: fuera «Lo último» — «Seguir · Cap. N» solo, a todo el ancho.
   const filaPrincipal = (function () {
     if (pgIdx > 0) {
       const contLabel = "Seguir · Cap. " + (chapters[pgIdx].num || (pgIdx + 1));
       return { type: "ElevatedButton", key: "cont", icon: "play",
-        labelText: contLabel, labelTextEn: contLabel, flex: 2,
+        labelText: contLabel, labelTextEn: contLabel, flex: 1,
         onPressed: { event: "read", arg: String(pgIdx) } };
     }
     return { type: "ElevatedButton", key: "start", icon: "play",
       labelText: "Empezar a leer", labelTextEn: "Start reading",
-      flex: 2, onPressed: { event: "read", arg: "0" } };
+      flex: 1, onPressed: { event: "read", arg: "0" } };
   })();
   // v1.1.5: fila secundaria SOLO con iconos (sin texto): el labelText
   // queda como etiqueta accesible/mando de TV, no se dibuja.
@@ -904,12 +909,7 @@ async function detailTree(state) {
         // v1.1.4: sinopsis plegable
         sinopsisNode(state, d.meta.overview),
         // v1.1.4: fila principal — leer, sin huecos
-        { type: "Row", key: "filaLeer", gap: 8, children: [
-          filaPrincipal,
-          { type: "ElevatedButton", key: "latest", icon: "expand_more",
-            labelText: "Lo último", labelTextEn: "Latest",
-            flex: 1, onPressed: { event: "read", arg: String(chapters.length - 1) } },
-        ] },
+        { type: "Row", key: "filaLeer", gap: 8, children: [filaPrincipal] },
         // v1.1.4: fila secundaria — gestión, sin huecos
         { type: "Row", key: "filaGestion", gap: 8,
           mainAxisAlignment: "center", children: filaSecundaria },
@@ -917,15 +917,29 @@ async function detailTree(state) {
     ],
   };
   const items = [head];
-  items.push({ type: "Text",
-    text: chapters.length + " capítulos" + (d.meta.capped ? " (mostrando los " + MAX_CAPS + " más recientes)" : ""),
-    textEn: chapters.length + " chapters", style: "h3", padding: 16 });
-  for (let i = 0; i < chapters.length; i++) {
-    const c = chapters[i];
+  // v1.1.8: el contador de capítulos lleva a su derecha un conmutador
+  // que invierte el orden de la lista: «Desde lo último» (los nuevos
+  // arriba) o «Desde el principio» (el 1 arriba, lo de siempre).
+  const desdeFinal = state.ordenCaps === "desc";
+  items.push({ type: "Row", key: "filaOrden", gap: 8, padding: 16, crossAxisAlignment: "center", children: [
+    { type: "Text", flex: 1,
+      text: chapters.length + " capítulos" + (d.meta.capped ? " (mostrando los " + MAX_CAPS + " más recientes)" : ""),
+      textEn: chapters.length + " chapters", style: "h3" },
+    { type: "TextButton", key: "ordenBtn", icon: "expand_more",
+      labelText: desdeFinal ? "Desde el principio" : "Desde lo último",
+      labelTextEn: desdeFinal ? "From the first" : "From the latest",
+      onPressed: { event: "ordenCaps" } },
+  ] });
+  // v1.1.8: la lista se pinta según el orden elegido; el índice que se
+  // pasa a «read» es siempre el de la lista ORIGINAL.
+  const lista = desdeFinal ? chapters.slice().reverse() : chapters;
+  const idxDe = (i) => desdeFinal ? String(chapters.length - 1 - i) : String(i);
+  for (let i = 0; i < lista.length; i++) {
+    const c = lista[i];
     items.push({
       type: "ListTile", key: "ch" + i, dense: true,
       title: c.title,
-      onTap: { event: "read", arg: String(i) },
+      onTap: { event: "read", arg: idxDe(i) },
       trailing: { type: "Icon", name: "arrow_forward" },
     });
   }
@@ -1247,6 +1261,12 @@ export async function screenEvent(ev) {
     // v1.1.4: plegar/desplegar la sinopsis del detalle
     if (name === "toggleSinopsis") {
       return { state: { sinopsisCompleta: state.sinopsisCompleta !== true } };
+    }
+    // v1.1.8: invertir el orden de la lista de capítulos del detalle
+    if (name === "ordenCaps") {
+      const nuevo = state.ordenCaps === "desc" ? "asc" : "desc";
+      return { state: { ordenCaps: nuevo },
+        toast: nuevo === "desc" ? "Mostrando desde lo último" : "Mostrando desde el principio" };
     }
     // v1.1.1: quitar UNA obra de «Seguir leyendo»/Historial (botón
     // «Olvidar lo leído» del detalle o pulsación larga en Historial)
