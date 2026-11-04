@@ -10,6 +10,12 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.9 — a petición del usuario:
+//   - Inicio: debajo de «Mis favoritos», dos filas nuevas —
+//     «Manga más populares» (por «me gusta») y «Los más leídos»
+//     (por visitas). Las trae el temporizador «cargarRoot», un par
+//     por tick, sin bloquear la pantalla.
+//
 // v1.1.8 — a petición del usuario:
 //   - Fuera el botón «Lo último» de la fila de lectura: «Seguir ·
 //     Cap. N» queda solo y ocupa todo el ancho.
@@ -708,7 +714,11 @@ function tabBody(state) {
         { type: "SingleChildScrollView", key: "skelRail", direction: "horizontal", padding: 16,
           children: [{ type: "Row", gap: 8, children: sk }] },
       ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
-        .concat(rail("Mis favoritos", "My favourites", "favs", favs())) }],
+        .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
+        .concat(rail("Manga más populares", "Most popular", "pop",
+          Array.isArray(state.popItems) ? state.popItems : []))
+        .concat(rail("Los más leídos", "Most read", "vistas",
+          Array.isArray(state.vistaItems) ? state.vistaItems : [])) }],
     };
   }
   if (!items.length) return EMPTY_LIB;
@@ -723,7 +733,12 @@ function tabBody(state) {
           onTap: { event: "goSearch" } },
       ].concat(rail("Últimas obras", "Latest works", "latest", items))
         .concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
-        .concat(rail("Mis favoritos", "My favourites", "favs", favs())),
+        .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
+        // v1.1.9: populares (likes) y más leídos (visitas)
+        .concat(rail("Manga más populares", "Most popular", "pop",
+          Array.isArray(state.popItems) ? state.popItems : []))
+        .concat(rail("Los más leídos", "Most read", "vistas",
+          Array.isArray(state.vistaItems) ? state.vistaItems : [])),
     }],
   };
 }
@@ -1211,6 +1226,21 @@ export async function screenEvent(ev) {
           const html = await getLibHtml(1, "created_at", "");
           return { state: { inicioItems: seriesCards(html, 30) } };
         } catch (e) { return { state: { inicioItems: [] } }; }
+      }
+      // v1.1.9: «Manga más populares» (por «me gusta») — un par por tick
+      // para no pedir tres listas de golpe.
+      if (tab === "inicio" && !Array.isArray(state.popItems)) {
+        try {
+          const html = await getLibHtml(1, "likes_count", "");
+          return { state: { popItems: seriesCards(html, 24) } };
+        } catch (e) { return { state: { popItems: [] } }; }
+      }
+      // v1.1.9: «Los más leídos» (por visitas)
+      if (tab === "inicio" && !Array.isArray(state.vistaItems)) {
+        try {
+          const html = await getLibHtml(1, "num_views", "");
+          return { state: { vistaItems: seriesCards(html, 24) } };
+        } catch (e) { return { state: { vistaItems: [] } }; }
       }
       return null;
     }
