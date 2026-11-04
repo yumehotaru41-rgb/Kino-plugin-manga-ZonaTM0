@@ -10,6 +10,17 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.6 — a petición del usuario:
+//   - El lector arranca SIEMPRE en pantalla completa: sin barra de
+//     botones propia ni botón flotante del ojo (obstruía la página).
+//   - «Anterior» y «Siguiente» aparecen UNA sola vez, en la tarjeta
+//     del final del capítulo (antes salían dos veces: panel inferior
+//     + final de tira).
+//   - La tarjeta del final añade «Volver al detalle» y, si el Kino
+//     admite el modo páginas, el cambio de modo.
+//   - En modo páginas (solo si estaba elegido) queda una barra fina
+//     inferior con Volver · Anterior · Siguiente, sin duplicados.
+//
 // v1.1.5 — a petición del usuario:
 //   - Detalle: «Continuar» con texto corto («Continuar · Cap. N», ya
 //     no se corta); Favoritos/Actualizar/Olvidar pasan a ser SOLO
@@ -953,65 +964,66 @@ function paginaFit(p, i) {
       fill: true, fit: "width", aspect: "2:3" } ] };
 }
 
-// v1.1.4: panel inferior del lector — «Anterior» y «Siguiente» SIEMPRE
-// visibles y activos (aunque no haya capítulo previo/siguiente, se
-// avisa con un toast) para poder cambiar rápido en cualquier punto.
-// Debajo, tras un divisor, la fila secundaria (modo · pantalla
-// completa) y el contador «Capítulo X de N».
-function panelInferior(r, chapters, modo) {
-  const secundaria = [];
-  if (pagesDisponible()) {
-    secundaria.push({ type: "TextButton", key: "btnModo",
-      labelText: modo === "paginas" ? "Modo tira" : "Modo páginas",
-      labelTextEn: modo === "paginas" ? "Strip mode" : "Page mode",
-      onPressed: "modoLector" });
-  }
-  secundaria.push({ type: "TextButton", key: "btnPantalla", icon: "visibility",
-    labelText: "Pantalla completa", labelTextEn: "Fullscreen",
-    onPressed: "lectorInm" });
+// v1.1.6: barra fina SOLO para el modo páginas (no hay final de tira
+// donde poner la tarjeta). Una sola fila, sin duplicados: Volver ·
+// Anterior · Siguiente.
+function barraPaginas(r, chapters) {
   return {
-    type: "Card", key: "panelLectura", margin: 8, padding: 12, gap: 8,
+    type: "Card", key: "panelLectura", margin: 8, padding: 8, gap: 8,
     children: [
-      { type: "Row", gap: 12, children: [
-        { type: "ElevatedButton", key: "btnPrev", icon: "arrow_back",
+      { type: "Row", gap: 8, children: [
+        { type: "IconButton", key: "pbBack", icon: "arrow_back",
+          labelText: "Volver al detalle", labelTextEn: "Back to details",
+          onPressed: { event: "popBack" } },
+        { type: "ElevatedButton", key: "pbPrev", icon: "arrow_back",
           labelText: "Anterior", labelTextEn: "Previous",
           onPressed: "prevChap", flex: 1 },
-        { type: "ElevatedButton", key: "btnNext", icon: "arrow_forward",
+        { type: "ElevatedButton", key: "pbNext", icon: "arrow_forward",
           labelText: "Siguiente", labelTextEn: "Next",
           onPressed: "nextChap", flex: 1 },
       ] },
-      { type: "Divider", key: "sepPanel" },
-      { type: "Row", gap: 8, mainAxisAlignment: "center", wrap: true, children: secundaria },
       { type: "Text", key: "lblPos",
         text: "Capítulo " + (r.idx + 1) + " de " + chapters.length,
         textEn: "Chapter " + (r.idx + 1) + " of " + chapters.length,
-        style: "caption", color: "muted", padding: 4 },
+        style: "caption", color: "muted" },
     ],
   };
 }
 
-// v1.1.5: tarjeta al final de la tira — «Anterior» y «Siguiente»
-// también aquí (siempre activos; en los extremos, el evento avisa con
-// un toast). Así el botón para pasar de capítulo está a la vista justo
-// cuando terminas de leer.
-function finCapituloNode(r, chapters) {
-  return {
-    type: "Card", key: "finCap", margin: 16, padding: 12, gap: 8,
-    children: [
+// v1.1.6: la ÚNICA barra de navegación del lector — la tarjeta al
+// final del capítulo. «Volver al detalle» arriba, «Anterior» y
+// «Siguiente» (siempre activos; en los extremos, el evento avisa con
+// un toast) a partes iguales, y el cambio de modo si tu Kino admite el
+// modo páginas.
+function finCapituloNode(r, chapters, modo) {
+  const children = [
+    { type: "Row", gap: 8, children: [
+      { type: "IconButton", key: "finBack", icon: "arrow_back",
+        labelText: "Volver al detalle", labelTextEn: "Back to details",
+        onPressed: { event: "popBack" } },
       { type: "Text", key: "finTitulo",
         text: "Capítulo " + (r.idx + 1) + " de " + chapters.length,
         textEn: "Chapter " + (r.idx + 1) + " of " + chapters.length,
-        style: "caption", color: "muted" },
-      { type: "Row", gap: 12, children: [
-        { type: "ElevatedButton", key: "finPrev", icon: "arrow_back",
-          labelText: "Anterior", labelTextEn: "Previous",
-          onPressed: "prevChap", flex: 1 },
-        { type: "ElevatedButton", key: "finNext", icon: "arrow_forward",
-          labelText: "Siguiente", labelTextEn: "Next",
-          onPressed: "nextChap", flex: 1 },
-      ] },
-    ],
-  };
+        style: "caption", color: "muted", flex: 1 },
+    ] },
+    { type: "Row", gap: 12, children: [
+      { type: "ElevatedButton", key: "finPrev", icon: "arrow_back",
+        labelText: "Anterior", labelTextEn: "Previous",
+        onPressed: "prevChap", flex: 1 },
+      { type: "ElevatedButton", key: "finNext", icon: "arrow_forward",
+        labelText: "Siguiente", labelTextEn: "Next",
+        onPressed: "nextChap", flex: 1 },
+    ] },
+  ];
+  if (pagesDisponible()) {
+    children.push({ type: "Row", gap: 8, mainAxisAlignment: "center", children: [
+      { type: "TextButton", key: "finModo",
+        labelText: modo === "paginas" ? "Modo páginas" : "Modo tira",
+        labelTextEn: modo === "paginas" ? "Page mode" : "Strip mode",
+        onPressed: "modoLector" },
+    ] });
+  }
+  return { type: "Card", key: "finCap", margin: 16, padding: 12, gap: 8, children };
 }
 
 async function readerTree(state) {
@@ -1033,44 +1045,32 @@ async function readerTree(state) {
   const chKey = String(ch.url).replace(/[^a-z0-9]/gi, "").slice(-16);
   const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
   const modo = modoLectorEfectivo(pages.length);
-  const inm = getJson("lectorInm", 0) ? true : false;
+  // v1.1.6: el lector es SIEMPRE pantalla completa — sin barra propia
+  // (queda la de Kino con Cerrar/Atrás), sin botón flotante del ojo y
+  // sin panel inferior. La navegación vive en la tarjeta del final.
   const body = [];
   if (modo === "paginas") {
     body.push({
       type: "pages", key: "pgs", flex: 1, progress: "bar", onPageChanged: "pgChanged",
       children: pages.map((p, i) => paginaFit(p, i)),
     });
+    body.push(barraPaginas(r, chapters));
   } else {
     body.push({
       type: "SingleChildScrollView", key: scrollKey, flex: 1, zoom: true,
       children: [{
         type: "Column", gap: 4, crossAxisAlignment: "center", fill: true,
         children: pages.flatMap((p, i) => pageNodes(p, i))
-          // v1.1.5: al final de la tira, una tarjeta para pasar de
-          // capítulo — siempre visible al terminar el capítulo.
-          .concat([finCapituloNode(r, chapters)]),
+          // v1.1.6: la tarjeta del final es la ÚNICA barra de
+          // navegación — «Anterior»/«Siguiente» aparecen una sola vez.
+          .concat([finCapituloNode(r, chapters, modo)]),
       }],
     });
   }
-  if (!inm) body.push(panelInferior(r, chapters, modo));
-  const raiz = {
+  return {
     type: "Scaffold",
-    appBar: inm ? undefined : { type: "AppBar", mergeWithKinoBar: true, dense: true, key: "barReader",
-      title: ch.title,
-      leading: { type: "IconButton", key: "backFromReader", icon: "arrow_back",
-        labelText: "Atrás", labelTextEn: "Back",
-        onPressed: { event: "popBack" } },
-      actions: [
-        { type: "IconButton", key: "verBarra", icon: "visibility",
-          labelText: "Pantalla completa (ocultar botones)", labelTextEn: "Fullscreen (hide buttons)",
-          onPressed: { event: "lectorInm" } },
-      ] },
     body: { type: "Column", children: body },
   };
-  if (inm) raiz.floatingActionButton = { type: "FloatingActionButton", key: "verBarras",
-    icon: "visibility", tooltip: "Mostrar botones", tooltipEn: "Show buttons",
-    onPressed: { event: "lectorInm" } };
-  return raiz;
 }
 
 async function searchTree(state) {
@@ -1333,10 +1333,6 @@ export async function screenEvent(ev) {
       if (ks.length > 300) for (const k of ks.slice(0, ks.length - 300)) try { kino.storage.remove(k); } catch (e) { }
       try { kino.storage.set("pg:" + r.chUrl, String(at)); } catch (e) { }
       return null;
-    }
-    if (name === "lectorInm") {
-      setJson("lectorInm", getJson("lectorInm", 0) ? 0 : 1);
-      return { state: { _r: Date.now() } };
     }
     if (name === "modoLector") {
       if (!pagesDisponible()) return null;
