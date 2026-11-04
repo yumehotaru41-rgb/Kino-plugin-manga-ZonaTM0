@@ -1,6 +1,6 @@
 // Plugin de Kino para leer obras de zonatmo.org (ZonaTM0)
 // Interfaz tipo lector de manga: Inicio, Biblioteca, Favoritos,
-// Historial, detalle de obra con lista completa de capítulos y lector
+// Historial, detalle de obra con lista de capítulos y lector
 // webcómic vertical. Basado en la arquitectura del plugin de Yuri
 // Online, adaptado al sitio ZonaTM0 (Laravel, clon de TuMangaOnline):
 //   - Biblioteca por AJAX: GET /biblioteca?...&page=N  → JSON { html }
@@ -10,22 +10,34 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
-// v1.0.1: nunca más un «Cargando…» eterno — todas las peticiones tienen
-// tiempo límite, la obra queda en caché 15 minutos (con botón
-// «Actualizar»), el detalle muestra error con «Reintentar» si falla y
-// la pantalla de pestañas también captura errores de red.
+// v1.1.0 (patrón de MangaTrack): nada bloquea la pantalla.
+//   - Abrir una obra empuja el detalle AL INSTANTE (con esqueletos) y
+//     las capítulo/metadata llegan en segundo plano mediante el
+//     temporizador «every» de la pantalla (sus ticks no cuentan para
+//     el «No responde» de Kino). Nunca más un «Cargando…» eterno.
+//   - Inicio y Biblioteca también se pintan al instante (caché o
+//     esqueletos) y se rellenan por el temporizador.
+//   - Lector sin medir imágenes: fit "width" + aspect "2:3" y Kino da
+//     a cada página su proporción real al cargarla (receta MangaTrack);
+//     se eliminaron las descargas de cabeceras que eternizaban la
+//     apertura en redes lentas.
+//   - Tope de 490 capítulos (los más recientes) por pantalla.
 //
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
 
 const BASE = "https://zonatmo.org";
+const MAX_CAPS = 490; // tope de capítulos por pantalla (Kino admite ~600 nodos)
 
 // ---------------------------------------------------------------- red
 
-// Todas las peticiones llevan timeoutMs: si el sitio no responde (web
-// lenta o colgada), se lanza un error que se muestra con «Reintentar»
-// en vez de quedarse cargando para siempre.
-async function getHtml(path) {
-  const r = await kino.fetch(BASE + path, { headers: { Accept: "text/html", Referer: BASE + "/" }, timeoutMs: 20000 });
+// Todas las peticiones llevan timeoutMs: si el sitio no responde, se
+// lanza un error que se muestra con «Reintentar». La página de una
+// obra puede ser enorme en series largas: 60 s de margen.
+async function getHtml(path, timeoutMs) {
+  const r = await kino.fetch(BASE + path, {
+    headers: { Accept: "text/html", Referer: BASE + "/" },
+    timeoutMs: timeoutMs || 20000,
+  });
   if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
     userMessage: "No se pudo conectar con ZonaTM0. Inténtalo de nuevo.",
   });
@@ -40,7 +52,7 @@ async function getLibHtml(page, order, q) {
     "&filter_by=title&order_item=" + (order || "likes_count") +
     "&order_dir=desc&_pg=1&page=" + page;
   const r = await kino.fetch(url, {
-    timeoutMs: 15000,
+    timeoutMs: 25000,
     headers: {
       Accept: "application/json, text/javascript, */*; q=0.01",
       Referer: BASE + "/biblioteca",
@@ -235,7 +247,7 @@ function uploadIdDe(url) {
 // storage.zonatmo.org/chapters/<uploadId>/<n>.webp y se referencian desde
 // el lector (etiquetas img y precargas). Se escanea el HTML en bruto
 // limitado a las URLs que llevan el id del capítulo, así no se cuelan
-// portadas ni banners. Devuelve [{ url, w, h }].
+// portadas ni banners. Devuelve [{ url }].
 function readerImages(html, uploadId) {
   const out = [], seen = {};
   const re = new RegExp("https?:\\/\\/[^\"'\\s>]+\\/chapters\\/" + uploadId +
@@ -244,7 +256,7 @@ function readerImages(html, uploadId) {
   while ((m = re.exec(html)) !== null) {
     if (seen[m[0]]) continue;
     seen[m[0]] = true;
-    out.push({ url: m[0], w: 0, h: 0 });
+    out.push({ url: m[0] });
   }
   // última carta: las img propias del lector (class reader-image)
   if (!out.length) {
@@ -254,7 +266,7 @@ function readerImages(html, uploadId) {
       const src = (t[0].match(/(?:data-src|data-lazy-src|data-original|src)="([^"]+)"/) || [])[1];
       if (!src || seen[src]) continue;
       seen[src] = true;
-      out.push({ url: absUrl(src), w: 0, h: 0 });
+      out.push({ url: absUrl(src) });
     }
   }
   // orden por número de archivo (…/<n>.webp)
@@ -263,25 +275,14 @@ function readerImages(html, uploadId) {
   return out;
 }
 
-// Caja (dp) para una página de proporción r = alto/ancho (ver Yuri Online)
-const SIZE_SCALE = [16, 24, 32, 40, 48, 64, 80, 96, 120, 160, 200, 240, 320, 400, 480, 560, 640];
-
-// v1.4.2 (Yuri Online): fit "width" + aspect de la proporción medida:
-// la página toma el ancho completo de la caja y el alto de su proporción
-// real — la página vertical entera, nunca recortada.
-function aspectDe(p, ratioGuia) {
-  const w = (p && p.w) || 0, h = (p && p.h) || 0;
-  let ratio = w > 0 && h > 0 ? h / w : (ratioGuia || 1.4);
-  if (!(ratio >= 0.2)) ratio = 0.2;
-  if (ratio > 5) ratio = 5;
-  return "1:" + (Math.round(ratio * 100) / 100);
-}
-
-function pageNodes(p, i, ratioGuia) {
+// v1.1.0 (receta de MangaTrack): las páginas ya no se miden. Con
+// fit "width" + aspect "2:3", Kino le da a cada página su proporción
+// real en cuanto la imagen carga — sin descargar cabeceras.
+function pageNodes(p, i) {
   return [{
     type: "Image", key: "p" + i, url: typeof p === "string" ? p : p.url,
     alt: "Página " + (i + 1), altEn: "Page " + (i + 1),
-    fill: true, fit: "width", aspect: aspectDe(p, ratioGuia),
+    fill: true, fit: "width", aspect: "2:3",
     fallback: { type: "Column", padding: 16, children: [
       { type: "Text", text: "Página " + (i + 1), textEn: "Page " + (i + 1), color: "muted" } ] },
   }];
@@ -289,8 +290,8 @@ function pageNodes(p, i, ratioGuia) {
 
 // Carga una obra: página de detalle + capítulos. En ZonaTM0 todas las
 // filas de capítulos (también las antiguas) ya están en el HTML.
-// Con caché de 15 minutos (force=true la salta): reabrir una obra es
-// inmediato y el botón «Actualizar» trae los capítulos nuevos.
+// Con caché de 15 minutos (force=true la salta). Tope de MAX_CAPS
+// capítulos (los más recientes) para no pasar del límite de nodos.
 async function loadSeries(slug, force) {
   if (!slugValido(slug)) throw kino.error("arguments", "slug");
   const ck = "serie:" + slug;
@@ -303,9 +304,15 @@ async function loadSeries(slug, force) {
       }
     } catch (e) { /* caché rota: se recarga */ }
   }
-  const html = await getHtml("/library/" + slug + "/");
+  const html = await getHtml("/library/" + slug + "/", 60000);
   const meta = seriesMeta(html, slug);
-  const chapters = chapterList(html);
+  let chapters = chapterList(html);
+  let capped = false;
+  if (chapters.length > MAX_CAPS) {
+    chapters = chapters.slice(chapters.length - MAX_CAPS);
+    capped = true;
+  }
+  if (capped) meta.capped = true;
   if (chapters.length) {
     try {
       setJson(ck, { meta, chapters, ts: Date.now() });
@@ -317,8 +324,7 @@ async function loadSeries(slug, force) {
 }
 
 // Carga la obra para el detalle: si falla (web caída, sin red, tiempo
-// límite), deja la obra en estado de error — con botón «Reintentar» —
-// en vez de un cargado eterno.
+// límite), deja la obra en estado de error — con botón «Reintentar».
 async function cargarDetalle(state, slug, force) {
   const prev = (state.detail && state.detail.slug === slug) ? state.detail : null;
   const meta0 = (prev && prev.meta) || {};
@@ -329,139 +335,6 @@ async function cargarDetalle(state, slug, force) {
     kino.log("detalle", e.message);
     return { state: { detail: { slug, error: true, meta: meta0, chapters: [] } } };
   }
-}
-
-// ------------------------------------------------- medir páginas
-// Receta de MangaTrack: descargar solo los primeros bytes de cada
-// imagen (kino.fetch maxBytes) y leer sus dimensiones del encabezado
-// (JPEG/PNG/GIF/WebP). Las páginas de ZonaTM0 son .webp sin
-// width/height en el HTML; así quedan medidas y la caja calza.
-function deB64(s) {
-  const ABC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const out = [];
-  let acc = 0, bits = 0;
-  for (let i = 0; i < s.length; i++) {
-    const v = ABC.indexOf(s.charAt(i));
-    if (v < 0) continue;
-    acc = (acc * 64) + v;
-    bits += 6;
-    if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xFF); acc = acc % Math.pow(2, bits); }
-  }
-  return out;
-}
-
-function dimsDeBytes(b) {
-  if (!Array.isArray(b) || b.length < 12) return null;
-  if (b[0] === 0xFF && b[1] === 0xD8) {
-    let i = 2;
-    while (i + 9 < b.length) {
-      if (b[i] !== 0xFF) { i++; continue; }
-      const m = b[i + 1];
-      if (m === 0x01 || (m >= 0xD0 && m <= 0xD9)) { i += 2; continue; }
-      const len = (b[i + 2] << 8) | b[i + 3];
-      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
-        return { w: (b[i + 7] << 8) | b[i + 8], h: (b[i + 5] << 8) | b[i + 6] };
-      }
-      if (m === 0xDA) break;
-      i += 2 + len;
-    }
-    return null;
-  }
-  if (b[0] === 0x89 && b[1] === 0x50) {
-    return { w: (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19],
-      h: (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23] };
-  }
-  if (b[0] === 0x47 && b[1] === 0x49) return { w: b[6] | (b[7] << 8), h: b[8] | (b[9] << 8) };
-  // WebP: "RIFF"…"WEBP" y el primer chunk VP8X / VP8 / VP8L
-  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
-      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) {
-    const tag = String.fromCharCode(b[12], b[13], b[14], b[15]);
-    if (tag === "VP8X" && b.length > 30) {
-      const w = 1 + (b[24] | (b[25] << 8) | (b[26] << 16));
-      const h = 1 + (b[27] | (b[28] << 8) | (b[29] << 16));
-      return { w, h };
-    }
-    if (tag === "VP8 " && b.length > 30) {
-      const w = (b[26] | (b[27] << 8)) & 0x3FFF;
-      const h = (b[28] | (b[29] << 8)) & 0x3FFF;
-      return { w, h };
-    }
-    if (tag === "VP8L" && b.length > 25) {
-      const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24);
-      return { w: (bits & 0x3FFF) + 1, h: ((bits >> 14) & 0x3FFF) + 1 };
-    }
-    return null;
-  }
-  return null;
-}
-
-function hashUrl(u) {
-  let h = 5381;
-  for (let i = 0; i < u.length; i++) h = ((h * 33) + u.charCodeAt(i)) >>> 0;
-  return ("0000000" + h.toString(16)).slice(-8);
-}
-
-function dimsTodas() { return getJson("dims", {}); }
-
-function dimPut(nuevos) {
-  try {
-    const all = dimsTodas();
-    for (let i = 0; i < nuevos.length; i++) all[nuevos[i][0]] = nuevos[i][1];
-    const ks = Object.keys(all);
-    if (ks.length > 300) for (let i = 0; i < ks.length - 300; i++) delete all[ks[i]];
-    setJson("dims", all);
-  } catch (e) { kino.log("dims", "guardar: " + e.message); }
-}
-
-async function dimsDeImagen(url) {
-  try {
-    const r = await kino.fetch(url, { maxBytes: 16384, timeoutMs: 5000,
-      headers: { Referer: BASE + "/" } });
-    if (!r.ok) return null;
-    const d = dimsDeBytes(deB64(r.base64()));
-    return d && d.w > 0 && d.h > 0 ? d : null;
-  } catch (e) { return null; }
-}
-
-// Mide (con el caché primero) las páginas que vengan sin dimensiones,
-// en lotes de 12 y con tope de tiempo para no eternizar la apertura.
-async function medirImagenes(images, presupuesto) {
-  const t0 = Date.now();
-  const cache = dimsTodas();
-  const pend = [];
-  let listas = 0;
-  for (let i = 0; i < images.length; i++) {
-    const im = images[i];
-    if (im.w > 0 && im.h > 0) { listas++; continue; }
-    const c = cache[hashUrl(im.url)];
-    if (Array.isArray(c) && c[0] > 0 && c[1] > 0) { im.w = c[0]; im.h = c[1]; listas++; continue; }
-    pend.push(im);
-  }
-  const nuevas = [];
-  let hechas = 0;
-  for (let i = 0; i < pend.length && hechas < 48; i += 12) {
-    if (Date.now() - t0 > (presupuesto || 6000)) break;
-    const lote = pend.slice(i, Math.min(pend.length, i + 12, i + 48 - hechas));
-    hechas += lote.length;
-    const rs = await Promise.all(lote.map((im) => dimsDeImagen(im.url).catch(() => null)));
-    for (let j = 0; j < lote.length; j++) {
-      if (rs[j]) {
-        lote[j].w = rs[j].w; lote[j].h = rs[j].h;
-        listas++;
-        nuevas.push([hashUrl(lote[j].url), [lote[j].w, lote[j].h]]);
-      }
-    }
-  }
-  if (nuevas.length) dimPut(nuevas);
-  return listas;
-}
-
-// Proporción mediana de las páginas medidas (receta de MangaTrack).
-function ratioGuiaDe(pages) {
-  const medidas = pages.filter((p) => p && p.w > 0 && p.h > 0).map((p) => p.h / p.w);
-  if (!medidas.length) return 0;
-  medidas.sort((a, b) => a - b);
-  return medidas[parseInt((medidas.length - 1) / 2, 10)];
 }
 
 // ------------------------------------------------------------ almacen
@@ -537,7 +410,8 @@ function syncPull() {
 }
 
 // caché de lector (últimos capítulos abiertos), para no volver a pedir
-function readerCache(url) { return getJson("rc:" + url, null); }function readerCachePut(url, images) {
+function readerCache(url) { return getJson("rc:" + url, null); }
+function readerCachePut(url, images) {
   try {
     const keys = kino.storage.keys().filter((k) => k.indexOf("rc:") === 0);
     if (keys.length > 4) for (const k of keys.slice(0, keys.length - 4)) kino.storage.remove(k);
@@ -570,7 +444,21 @@ function twoLines(t) {
   return [a, b];
 }
 
+// Título/portada de las tarjetas vistas, para pintar el detalle al
+// instante (antes de que llegue la página de la obra).
+const CARDINFO = {};
+function rememberCard(it) {
+  try {
+    if (it && it.slug && CARDINFO[it.slug] === undefined) {
+      CARDINFO[it.slug] = { title: it.title || "", poster: it.poster || "" };
+      const ks = Object.keys(CARDINFO);
+      if (ks.length > 300) delete CARDINFO[ks[0]];
+    }
+  } catch (e) { /* sin memoria */ }
+}
+
 function posterCard(it, prefix, rail) {
+  rememberCard(it);
   const img = {
     type: "Image", url: it.poster || "", aspect: "2:3",
     alt: it.title, altEn: it.title,
@@ -588,6 +476,27 @@ function posterCard(it, prefix, rail) {
 
 const EMPTY_LIB = { type: "emptyState", icon: "list", title: "Nada por aquí todavía.", titleEn: "Nothing here yet." };
 const EMPTY_FAV = { type: "emptyState", icon: "heart", title: "Marca obras con el corazón para verlas aquí.", titleEn: "Mark works with the heart to see them here." };
+
+// Esqueletos (receta MangaTrack): lo que se pinta mientras los datos
+// llegan en segundo plano.
+let skelSeq = 0;
+function skelCard() {
+  return { type: "Card", key: "sk" + skelSeq++, flush: true, children: [
+    { type: "Skeleton", shape: "block", height: 180 },
+    { type: "Skeleton", shape: "line", padding: 8 },
+    { type: "Skeleton", shape: "line", padding: 8 },
+  ] };
+}
+
+function skelGridNode(n) {
+  const cards = [];
+  for (let i = 0; i < (n || 12); i++) cards.push(skelCard());
+  return {
+    type: "ListView", key: "skel",
+    columns: { compact: 3, medium: 4, expanded: 6 },
+    items: cards,
+  };
+}
 
 function titleGridOf(items, eventMore, loading, done, emptyNode) {
   if (!items || !items.length) return emptyNode || EMPTY_LIB;
@@ -624,31 +533,20 @@ function historyList() {
   };
 }
 
-async function tabBody(state) {
+// v1.1.0: el cuerpo de las pestañas ya NUNCA espera a la red. Pinta lo
+// que haya en el estado y, si falta, esqueletos: el temporizador
+// «cargarRoot» trae los datos en segundo plano.
+function tabBody(state) {
   const tab = state.tab || "inicio";
   if (tab === "favoritos") return titleGridOf(favs(), null, false, true, EMPTY_FAV);
   if (tab === "historial") return historyList();
   if (tab === "biblioteca") {
-    const items = Array.isArray(state.libItems) ? state.libItems : await fetchLibrary(1);
+    const items = Array.isArray(state.libItems) ? state.libItems : null;
+    if (!items) return skelGridNode(12);
     return titleGridOf(items, "libMore", state.libLoading === true, state.libDone === true);
   }
-  return await homeBody(state);
-}
-
-// Biblioteca: las obras más populares (por "me gusta"), paginadas
-async function fetchLibrary(page) {
-  const html = await getLibHtml(page, "likes_count", "");
-  return seriesCards(html, 36);
-}
-
-// Inicio: riel con lo más reciente (por fecha de subida)
-async function homeBody(state) {
-  let items = Array.isArray(state.inicioItems) ? state.inicioItems : null;
-  if (!items) {
-    const html = await getLibHtml(1, "created_at", "");
-    items = seriesCards(html, 30);
-  }
-  if (!items.length) return EMPTY_LIB;
+  // inicio
+  const items = Array.isArray(state.inicioItems) ? state.inicioItems : null;
   const rail = (title, titleEn, key, list) => list.length ? [
     { type: "Text", text: title, textEn: titleEn, style: "h3", padding: 16 },
     { type: "SingleChildScrollView", key: key, direction: "horizontal", padding: 16,
@@ -660,6 +558,28 @@ async function homeBody(state) {
     .filter((x) => x.title)
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 20);
+  if (!items) {
+    // esqueletos de «Últimas obras» mientras carga el temporizador
+    const sk = [];
+    for (let i = 0; i < 8; i++) sk.push({
+      type: "Card", key: "skl" + i, flush: true, children: [
+        { type: "Skeleton", shape: "block", width: 120, height: 180 }] });
+    return {
+      type: "SingleChildScrollView", key: "homeSkel", flex: 1,
+      children: [{ type: "Column", children: [
+        { type: "ListTile", key: "searchTile", leading: { type: "Icon", name: "search" },
+          title: "Buscar obra", titleEn: "Search a work",
+          subtitle: "Por título, p. ej. Solo Leveling", subtitleEn: "By title, e.g. Solo Leveling",
+          trailing: { type: "Icon", name: "arrow_forward" },
+          onTap: { event: "goSearch" } },
+        { type: "Text", text: "Últimas obras", textEn: "Latest works", style: "h3", padding: 16 },
+        { type: "SingleChildScrollView", key: "skelRail", direction: "horizontal", padding: 16,
+          children: [{ type: "Row", gap: 8, children: sk }] },
+      ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
+        .concat(rail("Mis favoritos", "My favourites", "favs", favs())) }],
+    };
+  }
+  if (!items.length) return EMPTY_LIB;
   return {
     type: "SingleChildScrollView", key: "home", flex: 1,
     children: [{
@@ -674,6 +594,12 @@ async function homeBody(state) {
         .concat(rail("Mis favoritos", "My favourites", "favs", favs())),
     }],
   };
+}
+
+// Biblioteca: las obras más populares (por "me gusta"), paginadas
+async function fetchLibrary(page) {
+  const html = await getLibHtml(page, "likes_count", "");
+  return seriesCards(html, 36);
 }
 
 // ------------------------------------------------------------- rutas
@@ -702,9 +628,57 @@ function errorTree(msg, retryEvent, extra) {
   return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children };
 }
 
+// Detalle mientras la obra llega en segundo plano: esqueletos de los
+// capítulos (receta MangaTrack) + temporizador «cargarSerie» + un
+// botón «Cargar ahora» por si el Kino del teléfono no tuviera
+// temporizadores de pantalla.
+function detailLoadingTree(d) {
+  const info = CARDINFO[d.slug] || {};
+  const title = (d.meta && d.meta.title) || info.title || d.slug;
+  const poster = (d.meta && d.meta.poster) || info.poster || "";
+  const rows = [];
+  for (let i = 0; i < 10; i++) {
+    rows.push({ type: "Skeleton", key: "skr" + i, shape: "line", padding: 12 });
+  }
+  return {
+    type: "Scaffold",
+    every: { ms: 1000, event: "cargarSerie" },
+    appBar: {
+      title: title,
+      leading: { type: "IconButton", key: "backHome", icon: "arrow_back",
+        labelText: "Atrás", labelTextEn: "Back",
+        onPressed: { event: "popBack" } },
+      actions: [],
+    },
+    body: { type: "SingleChildScrollView", key: "detailLoading", children: [
+      { type: "Column", children: [
+        { type: "Row", gap: 16, padding: 16, crossAxisAlignment: "start", stackOnNarrow: true,
+          children: [
+            poster ? { type: "Image", url: poster, width: { compact: 120, expanded: 160 },
+              aspect: "2:3", alt: title, fallback: { type: "Skeleton", shape: "block" } }
+              : { type: "Skeleton", shape: "block", width: { compact: 120, expanded: 160 } },
+            { type: "Column", gap: 6, flex: 2, crossAxisAlignment: "start", children: [
+              { type: "Text", text: title, style: "h2" },
+              { type: "Skeleton", shape: "line" },
+              { type: "Skeleton", shape: "line" },
+              { type: "Skeleton", shape: "line" },
+              { type: "Text", text: "Cargando capítulos…", textEn: "Loading chapters…",
+                color: "muted", style: "caption" },
+              { type: "ElevatedButton", key: "loadNow", icon: "download",
+                labelText: "Cargar ahora", labelTextEn: "Load now",
+                onPressed: { event: "cargarSerieAhora" } },
+            ] },
+          ] },
+        { type: "Skeleton", shape: "line", padding: 16 },
+      ].concat(rows) },
+    ] },
+  };
+}
+
 async function detailTree(state) {
   const d = state.detail;
   if (!d) return loadingTree();
+  if (d.loading) return detailLoadingTree(d);
   const fav = isFav(d.slug);
   // la carga falló (web caída, sin red, tiempo límite agotado): se
   // ofrece reintentar en vez del cargado eterno de antes
@@ -771,7 +745,9 @@ async function detailTree(state) {
     ],
   };
   const items = [head];
-  items.push({ type: "Text", text: d.chapters.length + " capítulos", textEn: d.chapters.length + " chapters", style: "h3", padding: 16 });
+  items.push({ type: "Text",
+    text: d.chapters.length + " capítulos" + (d.meta.capped ? " (mostrando los " + MAX_CAPS + " más recientes)" : ""),
+    textEn: d.chapters.length + " chapters", style: "h3", padding: 16 });
   for (let i = 0; i < d.chapters.length; i++) {
     const c = d.chapters[i];
     items.push({
@@ -816,11 +792,11 @@ function modoLectorEfectivo(n) {
   return puede && modoLectorPref() === "paginas" ? "paginas" : "tira";
 }
 
-function paginaFit(p, i, ratioGuia) {
+function paginaFit(p, i) {
   return { type: "SingleChildScrollView", key: "z" + i, zoom: true, children: [
     { type: "Image", key: "p" + i, url: typeof p === "string" ? p : p.url,
       alt: "Página " + (i + 1), altEn: "Page " + (i + 1),
-      fill: true, fit: "width", aspect: aspectDe(p, ratioGuia) } ] };
+      fill: true, fit: "width", aspect: "2:3" } ] };
 }
 
 async function readerTree(state) {
@@ -841,21 +817,20 @@ async function readerTree(state) {
   const hasPrev = r.idx > 0;
   const chKey = String(ch ? ch.url : r.idx).replace(/[^a-z0-9]/gi, "").slice(-16);
   const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
-  const ratioGuia = ratioGuiaDe(pages);
   const modo = modoLectorEfectivo(pages.length);
   const inm = getJson("lectorInm", 0) ? true : false;
   const body = [];
   if (modo === "paginas") {
     body.push({
       type: "pages", key: "pgs", flex: 1, progress: "bar", onPageChanged: "pgChanged",
-      children: pages.map((p, i) => paginaFit(p, i, ratioGuia)),
+      children: pages.map((p, i) => paginaFit(p, i)),
     });
   } else {
     body.push({
       type: "SingleChildScrollView", key: scrollKey, flex: 1, zoom: true,
       children: [{
         type: "Column", gap: 4, crossAxisAlignment: "center", fill: true,
-        children: pages.flatMap((p, i) => pageNodes(p, i, ratioGuia)),
+        children: pages.flatMap((p, i) => pageNodes(p, i)),
       }],
     });
   }
@@ -943,26 +918,11 @@ export async function screen({ state, route }) {
   } catch (e) {
     return errorTree("No se pudo cargar (" + (e.code || "error") + ").", "retry");
   }
-  // ruta raíz: pestañas — también con error y Reintentar si la web no
-  // responde (antes esto dejaba la pantalla cargando para siempre)
-  let body;
-  try {
-    body = await tabBody(state);
-  } catch (e) {
-    return {
-      type: "Scaffold",
-      appBar: {
-        title: "ZonaTM0",
-        actions: [
-          { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
-        ],
-        bottom: { type: "TabBar", key: "tabs", tabs: TABS, value: state.tab || "inicio", onChanged: { event: "tab" } },
-      },
-      body: errorTree("No se pudo conectar con ZonaTM0. Comprueba tu conexión e inténtalo de nuevo.", "retry"),
-    };
-  }
+  // ruta raíz: pestañas. Se pintan AL INSTANTE (caché o esqueletos) y el
+  // temporizador «cargarRoot» trae lo que falte en segundo plano.
   return {
     type: "Scaffold",
+    every: { ms: 1500, event: "cargarRoot" },
     appBar: {
       title: "ZonaTM0",
       actions: [
@@ -973,8 +933,19 @@ export async function screen({ state, route }) {
         value: state.tab || "inicio", onChanged: { event: "tab" },
       },
     },
-    body,
+    body: tabBody(state),
   };
+}
+
+// El detalle en carga: arranca en segundo plano y evita que dos cargas
+// se pisen (temporizador + botón «Cargar ahora»).
+let serieEnCarga = null;
+
+function detailLoadingDe(slug) {
+  const info = CARDINFO[slug] || {};
+  return { slug, loading: true,
+    meta: { title: info.title || "", poster: info.poster || "" },
+    chapters: [] };
 }
 
 export async function screenEvent(ev) {
@@ -987,26 +958,54 @@ export async function screenEvent(ev) {
       if (r.name === "detail") {
         const slug = routeSlug(r);
         if (slug && slugValido(slug) && (!state.detail || state.detail.slug !== slug)) {
-          // carga con caché y, si falla, estado de error (no spinner eterno)
-          return await cargarDetalle(state, slug, false);
+          // v1.1.0: no se bloquea; el detalle se pinta ya con esqueletos
+          // y el temporizador «cargarSerie» trae los capítulos.
+          return { state: { detail: detailLoadingDe(slug) } };
         }
       }
       return null;
     }
     if (name === "tab") {
-      const tab = ev.value;
-      const patch = { tab };
+      // v1.1.0: cambiar de pestaña no espera a la red; si falta la
+      // lista, el temporizador la trae.
+      return { state: { tab: ev.value } };
+    }
+    // temporizador de la raíz: trae Inicio/Biblioteca en segundo plano
+    if (name === "cargarRoot") {
+      const tab = state.tab || "inicio";
       if (tab === "biblioteca" && !Array.isArray(state.libItems)) {
-        patch.libItems = await fetchLibrary(1);
-        patch.libPage = 1;
+        try {
+          const items = await fetchLibrary(1);
+          return { state: { libItems: items, libPage: 1, libDone: items.length < 36 } };
+        } catch (e) { return { state: { libItems: [], libError: true } }; }
       }
-      return { state: patch };
+      if (tab === "inicio" && !Array.isArray(state.inicioItems)) {
+        try {
+          const html = await getLibHtml(1, "created_at", "");
+          return { state: { inicioItems: seriesCards(html, 30) } };
+        } catch (e) { return { state: { inicioItems: [] } }; }
+      }
+      return null;
+    }
+    // temporizador del detalle: carga la obra en segundo plano
+    if (name === "cargarSerie" || name === "cargarSerieAhora") {
+      const d = state.detail;
+      if (!d || !d.loading) return null;
+      if (serieEnCarga === d.slug && name === "cargarSerie") return null;
+      serieEnCarga = d.slug;
+      try {
+        // refresh=true salta el caché (botón «Actualizar»/«Reintentar»)
+        return await cargarDetalle(state, d.slug, d.refresh === true);
+      } finally {
+        serieEnCarga = null;
+      }
     }
     if (name === "libMore") {
       const page = (state.libPage || 1) + 1;
       const more = await fetchLibrary(page);
-      const merged = (state.libItems || []).concat(more.filter((x) => !(state.libItems || []).some((y) => y.slug === x.slug)));
-      return { state: { libItems: merged, libPage: page, libDone: more.length < 36 } };
+      let merged = (state.libItems || []).concat(more.filter((x) => !(state.libItems || []).some((y) => y.slug === x.slug)));
+      if (merged.length > 216) merged = merged.slice(0, 216);
+      return { state: { libItems: merged, libPage: page, libDone: more.length < 36 || merged.length >= 216 } };
     }
     if (name === "goSearch") return { route: { push: "search" } };
     if (name === "popBack") return { route: { pop: true } };
@@ -1019,11 +1018,14 @@ export async function screenEvent(ev) {
         toast: results.length ? results.length + " resultados" : "Sin resultados" };
     }
     if (name === "retry") return { state: { _r: Date.now() } };
-    // Reintentar / Actualizar en el detalle: salta el caché y recarga
+    // Reintentar / Actualizar en el detalle: vuelve a la vista de
+    // esqueletos (sin bloquear) y el temporizador recarga saltando el
+    // caché (refresh=true).
     if (name === "reloadSeries") {
       const d = state.detail;
       if (!d) return null;
-      return await cargarDetalle(state, d.slug, true);
+      return { state: { detail: { slug: d.slug, loading: true, refresh: true,
+        meta: d.meta || {}, chapters: [] } } };
     }
     if (name === "fav") {
       const d = state.detail;
@@ -1060,12 +1062,13 @@ export async function screenEvent(ev) {
       const upId = uploadIdDe(ch.url);
       let images = readerCache(ch.url);
       if (!images || !upId || !images.length) {
-        const html = await getHtml(ch.url.replace(BASE, ""));
+        const html = await getHtml(ch.url.replace(BASE, ""), 30000);
         images = readerImages(html, upId || ch.id);
         if (images.length) readerCachePut(ch.url, images);
       }
       if (!images.length) return { toast: "No se encontraron páginas en este capítulo." };
-      try { await medirImagenes(images, 6000); } catch (e) { kino.log("dims", e.message); }
+      // v1.1.0: sin medición de imágenes — el lector abre ya mismo y
+      // Kino ajusta cada página a su proporción real al cargarla.
       markRead(slug, title, poster, ch.title, ch.url);
       const reader = { slug, title, poster, chapters, idx, images, tk: ++navSeq };
       const resp = { state: { reader } };
@@ -1106,11 +1109,10 @@ export async function screenEvent(ev) {
     if (name === "openSeries") {
       const slug = String(ev.arg || "");
       if (!slugValido(slug)) return null;
-      const resp = await cargarDetalle(state, slug, false);
-      const d = resp.state.detail;
-      if (d.error) return { toast: "No se pudo cargar la obra. Inténtalo de nuevo." };
-      if (!d.chapters.length) return { toast: "No se encontraron capítulos." };
-      return { state: { detail: d },
+      // v1.1.0 (receta MangaTrack): el detalle se abre AL INSTANTE con
+      // esqueletos; los capítulos llegan por el temporizador en segundo
+      // plano. Nunca más un «Cargando…» colgado al abrir un título.
+      return { state: { detail: detailLoadingDe(slug) },
                route: { push: "detail", params: { slug } } };
     }
   } catch (e) {
