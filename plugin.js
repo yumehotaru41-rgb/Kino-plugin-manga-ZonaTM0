@@ -10,6 +10,11 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.1.7 — a petición del usuario:
+//   - Fila de lectura del detalle: el botón de continuar usa un
+//     sinónimo más corto («Seguir · Cap. N») y ocupa el doble de
+//     ancho que «Lo último» — el número de capítulo se lee COMPLETO.
+//
 // v1.1.6 — a petición del usuario:
 //   - El lector arranca SIEMPRE en pantalla completa: sin barra de
 //     botones propia ni botón flotante del ojo (obstruía la página).
@@ -855,17 +860,19 @@ async function detailTree(state) {
   //    último
   //  - fila secundaria compacta: Favoritos · Actualizar · Olvidar lo
   //    leído (solo si hay progreso)
-  // v1.1.5: textos cortos que no se cortan — «Continuar · Cap. N»
+  // v1.1.7: «Seguir · Cap. N» (sinónimo corto de Continuar) con el
+  // doble de ancho: el número de capítulo se lee completo. «Lo último»
+  // se acorta también para darle sitio.
   const filaPrincipal = (function () {
     if (pgIdx > 0) {
-      const contLabel = "Continuar · Cap. " + (chapters[pgIdx].num || (pgIdx + 1));
+      const contLabel = "Seguir · Cap. " + (chapters[pgIdx].num || (pgIdx + 1));
       return { type: "ElevatedButton", key: "cont", icon: "play",
-        labelText: contLabel, labelTextEn: contLabel, flex: 1,
+        labelText: contLabel, labelTextEn: contLabel, flex: 2,
         onPressed: { event: "read", arg: String(pgIdx) } };
     }
     return { type: "ElevatedButton", key: "start", icon: "play",
       labelText: "Empezar a leer", labelTextEn: "Start reading",
-      flex: 1, onPressed: { event: "read", arg: "0" } };
+      flex: 2, onPressed: { event: "read", arg: "0" } };
   })();
   // v1.1.5: fila secundaria SOLO con iconos (sin texto): el labelText
   // queda como etiqueta accesible/mando de TV, no se dibuja.
@@ -900,7 +907,7 @@ async function detailTree(state) {
         { type: "Row", key: "filaLeer", gap: 8, children: [
           filaPrincipal,
           { type: "ElevatedButton", key: "latest", icon: "expand_more",
-            labelText: "Leer lo último", labelTextEn: "Read latest",
+            labelText: "Lo último", labelTextEn: "Latest",
             flex: 1, onPressed: { event: "read", arg: String(chapters.length - 1) } },
         ] },
         // v1.1.4: fila secundaria — gestión, sin huecos
