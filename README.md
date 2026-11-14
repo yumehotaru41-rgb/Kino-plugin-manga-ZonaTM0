@@ -16,6 +16,11 @@ Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para leer manga y we
 
 Nada bloquea la pantalla: el detalle, el Inicio y la Biblioteca se pintan al instante (caché o esqueletos) y los datos llegan en segundo plano con temporizadores. Las páginas del lector no se miden: Kino les da su proporción real al cargar (fit "width" + aspect "2:3"). Tope de 490 capítulos por pantalla (los más recientes) y de 15 minutos de caché por obra. Lo pesado (capítulos e imágenes) vive en `kino.storage`, no en el estado de la pantalla (v1.1.2).
 
+## Cambios en 1.2.1 — el lector empieza siempre en la primera página
+
+- Al abrir un capítulo, o pasar al siguiente/anterior, el lector arranca SIEMPRE desde la página 1: ya no recupera la última página que veías de ese capítulo ni conserva la posición de scroll del capítulo anterior.
+- En modo páginas ya no se restaura la página guardada; en modo tira, las claves de scroll e imágenes son únicas por apertura para que Kino no herede la posición anterior.
+
 ## Cambios en 1.2.0 — Inicio por categorías
 
 - El Inicio se organiza por géneros: Acción, Comedia, Isekai, Fantasía, Romance y Drama (los ids de género se leen del propio sitio, con caché de un día).
@@ -67,7 +72,7 @@ Nada bloquea la pantalla: el detalle, el Inicio y la Biblioteca se pintan al ins
 
 1. Abre Kino → Ajustes → Plugins.
 2. Añade el repositorio `yumehotaru41-rgb/Kino-plugin-manga-ZonaTM0` (o la URL de este repo en raw).
-3. Instala **ZonaTM0 v1.2.0**.
+3. Instala **ZonaTM0 v1.2.1**.
 4. Aparece en el menú lateral / franja de Inicio de Kino como «ZonaTM0» (y un botón «Abrir pantalla» en su página de ajustes).
 
 > Nota: añade el topic `kino-plugin` al repo en GitHub para que aparezca en el listado oficial de plugins de Kino.

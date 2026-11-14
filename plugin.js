@@ -10,6 +10,13 @@
 //                           storage.zonatmo.org/chapters/<id>/<n>.webp
 // Funciona en teléfono y TV desde el mismo árbol de nodos.
 //
+// v1.2.1 — a petición del usuario:
+//   - El lector EMPIEZA SIEMPRE desde la primera página, tanto al
+//     abrir un capítulo como al pasar al siguiente o al anterior:
+//     fuera la recuperación de la última página guardada y cualquier
+//     posición de scroll heredada del capítulo anterior (claves de
+//     scroll, imágenes y paginador únicas por apertura).
+//
 // v1.2.0 — a petición del usuario:
 //   - Inicio reorganizado por categorías: fuera «Últimas obras»,
 //     «Manga más populares» y «Los más leídos»; ahora hay secciones
@@ -370,9 +377,9 @@ function readerImages(html, uploadId) {
 // v1.1.0 (receta de MangaTrack): las páginas ya no se miden. Con
 // fit "width" + aspect "2:3", Kino le da a cada página su proporción
 // real en cuanto la imagen carga — sin descargar cabeceras.
-function pageNodes(p, i) {
+function pageNodes(p, i, pre) {
   return [{
-    type: "Image", key: "p" + i, url: typeof p === "string" ? p : p.url,
+    type: "Image", key: (pre || "") + "p" + i, url: typeof p === "string" ? p : p.url,
     alt: "Página " + (i + 1), altEn: "Page " + (i + 1),
     fill: true, fit: "width", aspect: "2:3",
     fallback: { type: "Column", padding: 16, children: [
@@ -1063,9 +1070,10 @@ function modoLectorEfectivo(n) {
   return puede && modoLectorPref() === "paginas" ? "paginas" : "tira";
 }
 
-function paginaFit(p, i) {
-  return { type: "SingleChildScrollView", key: "z" + i, zoom: true, children: [
-    { type: "Image", key: "p" + i, url: typeof p === "string" ? p : p.url,
+function paginaFit(p, i, pre) {
+  const k = (pre || "") + "p" + i;
+  return { type: "SingleChildScrollView", key: k + "z", zoom: true, children: [
+    { type: "Image", key: k, url: typeof p === "string" ? p : p.url,
       alt: "Página " + (i + 1), altEn: "Page " + (i + 1),
       fill: true, fit: "width", aspect: "2:3" } ] };
 }
@@ -1150,6 +1158,7 @@ async function readerTree(state) {
   }
   const chKey = String(ch.url).replace(/[^a-z0-9]/gi, "").slice(-16);
   const scrollKey = "pages-" + r.idx + "-" + chKey + "-" + (r.tk || 0);
+  const pre = "r" + (r.tk || 0) + "-"; // v1.2.1: claves únicas por apertura
   const modo = modoLectorEfectivo(pages.length);
   // v1.1.6: el lector es SIEMPRE pantalla completa — sin barra propia
   // (queda la de Kino con Cerrar/Atrás), sin botón flotante del ojo y
@@ -1157,8 +1166,10 @@ async function readerTree(state) {
   const body = [];
   if (modo === "paginas") {
     body.push({
-      type: "pages", key: "pgs", flex: 1, progress: "bar", onPageChanged: "pgChanged",
-      children: pages.map((p, i) => paginaFit(p, i)),
+      // v1.2.1: clave única por apertura — el paginador arranca en la
+      // página 1, sin restaurar la última vista.
+      type: "pages", key: "pgs-" + (r.tk || 0), flex: 1, progress: "bar",
+      children: pages.map((p, i) => paginaFit(p, i, pre)),
     });
     body.push(barraPaginas(r, chapters));
   } else {
@@ -1166,7 +1177,7 @@ async function readerTree(state) {
       type: "SingleChildScrollView", key: scrollKey, flex: 1, zoom: true,
       children: [{
         type: "Column", gap: 4, crossAxisAlignment: "center", fill: true,
-        children: pages.flatMap((p, i) => pageNodes(p, i))
+        children: pages.flatMap((p, i) => pageNodes(p, i, pre))
           // v1.1.6: la tarjeta del final es la ÚNICA barra de
           // navegación — «Anterior»/«Siguiente» aparecen una sola vez.
           .concat([finCapituloNode(r, chapters, modo)]),
@@ -1470,25 +1481,8 @@ export async function screenEvent(ev) {
       const reader = { slug, title, poster, idx, chUrl: ch.url, imgs: images, tk: ++navSeq };
       const resp = { state: { reader } };
       if (name === "read") resp.route = { push: "read" };
-      if (modoLectorEfectivo(images.length) === "paginas") {
-        let at = parseInt(getJson("pg:" + ch.url, 0), 10);
-        if (!(at >= 0) || at >= images.length) at = 0;
-        resp.ui = [{ set: { key: "pgs", value: at } }];
-      }
+      // v1.2.1: SIEMPRE desde la primera página — nada que restaurar.
       return resp;
-    }
-    if (name === "pgChanged") {
-      const r = state.reader;
-      if (!r || !r.chUrl) return null;
-      let at = parseInt(String(ev.value === undefined ? "" : ev.value), 10);
-      if (!(at >= 0)) at = 0;
-      const ks = [];
-      try {
-        for (const k of kino.storage.keys()) if (k.indexOf("pg:") === 0) ks.push(k);
-      } catch (e) { }
-      if (ks.length > 300) for (const k of ks.slice(0, ks.length - 300)) try { kino.storage.remove(k); } catch (e) { }
-      try { kino.storage.set("pg:" + r.chUrl, String(at)); } catch (e) { }
-      return null;
     }
     if (name === "modoLector") {
       if (!pagesDisponible()) return null;
