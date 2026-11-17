@@ -4,6 +4,7 @@
   "version": "1.2.1",
   "description": "Lee obras de zonatmo.org en Kino: Inicio, Biblioteca, Favoritos, Historial y lector webcómic vertical.",
   "author": "yumehotaru41",
+  "creator": "hotaruyume",
   "apiVersion": 14,
   "capabilities": [
     "screen",
