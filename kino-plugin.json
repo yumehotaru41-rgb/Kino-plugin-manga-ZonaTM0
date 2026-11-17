@@ -9,6 +9,9 @@
     "screen",
     "shared"
   ],
+  "categories": [
+    "manga"
+  ],
   "hosts": [
     "zonatmo.org",
     "storage.zonatmo.org"
